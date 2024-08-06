@@ -178,37 +178,47 @@ static int cancel_transfers(airspyhf_device_t* device)
 
 static int free_transfers(airspyhf_device_t* device)
 {
-	int i;
-	uint32_t transfer_index;
+    if (device == NULL)
+    {
+        return AIRSPYHF_ERROR;
+    }
 
-	if (device->transfers != NULL)
-	{
-		free(device->output_buffer);
-		device->output_buffer = NULL;
+    if (device->transfers != NULL)
+    {
+        if (device->output_buffer != NULL)
+        {
+            free(device->output_buffer);
+            device->output_buffer = NULL;
+        }
 
-		for (transfer_index = 0; transfer_index < device->transfer_count; transfer_index++)
-		{
-			if (device->transfers[transfer_index] != NULL)
-			{
-				libusb_free_transfer(device->transfers[transfer_index]);
-				free(device->transfers[transfer_index]->buffer);
-				device->transfers[transfer_index] = NULL;
-			}
-		}
-		free(device->transfers);
-		device->transfers = NULL;
+        for (int transfer_index = 0; transfer_index < device->transfer_count; transfer_index++)
+        {
+            if (device->transfers[transfer_index] != NULL)
+            {
+                if (device->transfers[transfer_index]->buffer != NULL)
+                {
+                    free(device->transfers[transfer_index]->buffer);
+                    device->transfers[transfer_index]->buffer = NULL;
+                }
+                libusb_free_transfer(device->transfers[transfer_index]);
+                device->transfers[transfer_index] = NULL;
+            }
+        }
 
-		for (i = 0; i < RAW_BUFFER_COUNT; i++)
-		{
-			if (device->received_samples_queue[i] != NULL)
-			{
-				free(device->received_samples_queue[i]);
-				device->received_samples_queue[i] = NULL;
-			}
-		}
-	}
+        free(device->transfers);
+        device->transfers = NULL;
 
-	return AIRSPYHF_SUCCESS;
+        for (int i = 0; i < RAW_BUFFER_COUNT; i++)
+        {
+            if (device->received_samples_queue[i] != NULL)
+            {
+                free(device->received_samples_queue[i]);
+                device->received_samples_queue[i] = NULL;
+            }
+        }
+    }
+
+    return AIRSPYHF_SUCCESS;
 }
 
 static int allocate_transfers(airspyhf_device_t* const device)
