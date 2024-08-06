@@ -102,7 +102,7 @@ typedef struct {
 	uint32_t revision;
 } airspyhf_lib_version_t;
 
-#define MAX_NAME_STRING_SIZE (64)
+#define MAX_NAME_STRING_SIZE (255)
 #define MAX_VERSION_STRING_SIZE MAX_NAME_STRING_SIZE
 
 typedef int (*airspyhf_sample_block_cb_fn) (airspyhf_transfer_t* transfer_fn);
