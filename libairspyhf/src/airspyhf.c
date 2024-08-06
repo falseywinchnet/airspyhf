@@ -1634,38 +1634,36 @@ int ADDCALL airspyhf_board_partid_serialno_read(airspyhf_device_t* device, airsp
 
 int ADDCALL airspyhf_version_string_read(airspyhf_device_t* device, char* version, uint8_t length)
 {
-	int result;
-	char version_local[MAX_VERSION_STRING_SIZE];
-
-	result = libusb_control_transfer(
-		device->usb_device,
-		LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
-		AIRSPYHF_GET_VERSION_STRING,
-		0,
-		0,
-		(unsigned char*) version_local,
-		(MAX_VERSION_STRING_SIZE - 1),
-		LIBUSB_CTRL_TIMEOUT_MS);
-
-	if (result < 0)
-	{
-		return AIRSPYHF_ERROR;
-	}
-	else
-	{
-		if (length > 0)
-		{
-			memcpy(version, version_local, length - 1);
-			version[length - 1] = 0;
-			return AIRSPYHF_SUCCESS;
-		}
-		else
-		{
-			return AIRSPYHF_ERROR;
-		}
-	}
+    int result;
+    char version_local[MAX_VERSION_STRING_SIZE];
+    result = libusb_control_transfer(
+        device->usb_device,
+        LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
+        AIRSPYHF_GET_VERSION_STRING,
+        0,
+        0,
+        (unsigned char*) version_local,
+        (MAX_VERSION_STRING_SIZE - 1),
+        LIBUSB_CTRL_TIMEOUT_MS);
+    if (result < 0)
+    {
+        return AIRSPYHF_ERROR;
+    }
+    else
+    {
+        if (length > 0 && length <= MAX_VERSION_STRING_SIZE)
+        {
+            size_t copy_length = (size_t)((length - 1) < (MAX_VERSION_STRING_SIZE - 1) ? (length - 1) : (MAX_VERSION_STRING_SIZE - 1));
+            memcpy(version, version_local, copy_length);
+            version[copy_length] = 0;
+            return AIRSPYHF_SUCCESS;
+        }
+        else
+        {
+            return AIRSPYHF_ERROR;
+        }
+    }
 }
-
 int ADDCALL airspyhf_get_att_steps(airspyhf_device_t* device, void* buffer, const uint32_t len)
 {
 	if (len == 0)
