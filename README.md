@@ -9,9 +9,9 @@ http://www.airspy.com/airspy-hf-plus
 ### For VisualStudio 2013 or later:
 
 * `git clone https://github.com/airspy/airspyhf.git host`
-* Download https://github.com/libusb/libusb/releases/download/v1.0.20/libusb-1.0.20.7z
-* Extract **libusb-1.0.20.7z** to host directory
-  * You should have **host\libusb-1.0.20**
+* Download https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.7z
+* Extract **libusb-1.0.27.7z** to host directory
+  * You should have **host\libusb-1.0.27**
 * Download ftp://mirrors.kernel.org/sourceware/pthreads-win32/pthreads-w32-2-9-1-release.zip
 * Extract **pthreads-w32-2-9-1-release.zip** to host directory
   * You should have **host\libpthread-2-9-1-win**
