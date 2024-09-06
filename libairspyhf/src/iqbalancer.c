@@ -1,10 +1,6 @@
 /*
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
-Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
-
-
 
 All rights reserved.
 
@@ -350,34 +346,6 @@ static complex_t utility(struct iq_balancer_t *iq_balancer, complex_t* ccorr)
 
 
 
-static float gradient_descent(float current_value, float gradient, float learning_rate) {
-    return current_value - learning_rate * gradient;  // simple gradient descent step
-}
-
-static void apply_gradient_descent(struct iq_balancer_t *iq_balancer, float phase_imbalance, float amplitude_imbalance) {
-	#define AMPLITUDE_CLAMP 0.03f  // Based on signal-to-noise energy thresholds (electronics-09-01868)
-	#define PHASE_CLAMP (MATH_PI / 4)  // 45 degrees from qpsk tolerance limits
-
-    float phase_grad = phase_imbalance - iq_balancer->phase;
-    float amplitude_grad = amplitude_imbalance - iq_balancer->amplitude;
-
-    // Gradient descent step
-    iq_balancer->phase = gradient_descent(iq_balancer->phase, phase_grad, PhaseStep);
-    iq_balancer->amplitude = gradient_descent(iq_balancer->amplitude, amplitude_grad, AmplitudeStep);
-
-	// Apply amplitude clamp AFTER the update
-	if (fabs(iq_balancer->amplitude) > AMPLITUDE_CLAMP) {
-		iq_balancer->amplitude = (iq_balancer->amplitude > 0) ? AMPLITUDE_CLAMP : -AMPLITUDE_CLAMP;
-	}
-
-	// Apply phase clamp AFTER the update
-	if (fabs(iq_balancer->phase) > PHASE_CLAMP) {
-		iq_balancer->phase = (iq_balancer->phase > 0) ? PHASE_CLAMP : -PHASE_CLAMP;
-	}
-}
-
-
-
 static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length) {
     int i, j;
     float amplitude, phase, mu;
@@ -410,6 +378,19 @@ static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq,
     }
 
     iq_balancer->no_of_avg = 0;
+	
+	if (iq_balancer->optimal_bin == FFTBins / 2)
+	{
+		if (iq_balancer->integrated_total_power < iq_balancer->maximum_image_power)
+			return;
+		iq_balancer->maximum_image_power = iq_balancer->integrated_total_power;
+	}
+	else
+	{
+		if (iq_balancer->integrated_image_power - iq_balancer->integrated_total_power * BoostWindowNorm < iq_balancer->maximum_image_power * PowerThreshold)
+			return;
+		iq_balancer->maximum_image_power = iq_balancer->integrated_image_power - iq_balancer->integrated_total_power * BoostWindowNorm;
+	}
 
     // Step 4: Compute phase and amplitude adjustments based on correlations
     a = utility(iq_balancer, iq_balancer->corr);        // Utility for main signal
@@ -459,13 +440,10 @@ static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq,
     // Update the raw pointer for next iteration
     iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
 
-  
-	apply_gradient_descent(iq_balancer, phase, amplitude);
-    // Step 8: Apply decay to the maximum image power to prevent buildup over time
+	iq_balancer->phase = phase;
+	iq_balancer->amplitude = amplitude;
     iq_balancer->maximum_image_power *= MaxPowerDecay;
 
-    // Step 9: Return the residual phase and amplitude for integration into the new method
-    // The new approach would use these values as micro-adjustments
 }
 
 
