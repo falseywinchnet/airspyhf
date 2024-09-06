@@ -142,10 +142,10 @@ int main (const int argc, char **argv)
 			for (n=1; n < ndev+1; ++n, ++ps) {
 				if (airspyhf_open_sn(&dev, *ps) != AIRSPYHF_SUCCESS) {
 					fprintf(stderr, "airspyhf_open() receiver #%d failed\n", n);
-					goto exit_error;
+					free(serials); goto exit_error;
 				}
 			}
-			free (serials);
+			
 		}
 	}
 	// update GPIO
