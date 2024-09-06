@@ -75,6 +75,7 @@ void print_receiver_data (struct airspyhf_device* pd)
 			printf("\n");
 			if (airspyhf_close(pd) != AIRSPYHF_SUCCESS)
 				fprintf(stderr, "airspyhf_close() board failed\n");
+		free(samplerates);//free memory
 		} else {
 			fprintf(stderr, "airspyhf_get_samplerates() failed\n");
 		}

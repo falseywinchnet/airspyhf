@@ -320,7 +320,7 @@ int rx_callback(airspyhf_transfer_t* transfer)
 			sample_count += transfer->sample_count;
 			if (buffer_count == 50) {
 				time_difference = TimevalDiff(&time_now, &time_start);
-				rate = (float) sample_count / time_difference;
+				rate = time_difference > 0 ? (float) sample_count / time_difference : 0;}
 				average_rate += 0.2f * (rate - average_rate);
 				global_average_rate += average_rate;
 				rate_samples++;
@@ -338,10 +338,10 @@ int rx_callback(airspyhf_transfer_t* transfer)
 		}
 
 		if(pt_rx_buffer) {
-			bytes_written = fwrite(pt_rx_buffer, 1, bytes_to_write, fd);
-		} else {
-			bytes_written = 0;
+			//bytes_written = fwrite(pt_rx_buffer, 1, bytes_to_write, fd);
+			bytes_written = pt_rx_buffer ? fwrite(pt_rx_buffer, 1, bytes_to_write, fd) : 0;
 		}
+
 		if  ( (bytes_written != bytes_to_write) ||
 			  ((limit_num_samples == true) && (bytes_to_xfer == 0))
 			)
