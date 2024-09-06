@@ -59,6 +59,12 @@ struct iq_balancer_t;
 
 typedef airspyhf_complex_float_t complex_t;
 
+void iq_balancer_process_new_method(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
+void classify_frequency_points(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
+float estimate_amplitude_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
+float estimate_phase_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
+void apply_gradient_descent(struct iq_balancer_t *iq_balancer, float phase_imbalance, float amplitude_imbalance);
+
 ADDAPI struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
 ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t *iq_balancer, float w);
 ADDAPI void ADDCALL iq_balancer_configure(struct iq_balancer_t *iq_balancer, int buffers_to_skip, int fft_integration, int fft_overlap, int correlation_integration);

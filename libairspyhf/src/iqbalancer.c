@@ -1,6 +1,7 @@
 /*
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
+Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
 
 All rights reserved.
 
@@ -194,11 +195,12 @@ static void fft(complex_t *buffer, int length)
 	}
 }
 
-static void cancel_dc(struct iq_balancer_t *iq_balancer, complex_t* iq, int length, uint8_t skip_eval)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, uint8_t skip_eval)
 {
 	int i;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
+	const float alpha = 0.001f; // Adjust this value for desired behavior
 
 	if (skip_eval)
 	{
@@ -212,9 +214,8 @@ static void cancel_dc(struct iq_balancer_t *iq_balancer, complex_t* iq, int leng
 	{
 		for (i = 0; i < length; i++)
 		{
-			iavg += DcTimeConst * (iq[i].re - iavg);
-			qavg += DcTimeConst * (iq[i].im - qavg);
-
+			iavg = (1 - alpha) * iavg + alpha * iq[i].re;
+			qavg = (1 - alpha) * qavg + alpha * iq[i].im;
 			iq[i].re -= iavg;
 			iq[i].im -= qavg;
 		}
@@ -222,7 +223,6 @@ static void cancel_dc(struct iq_balancer_t *iq_balancer, complex_t* iq, int leng
 		iq_balancer->qavg = qavg;
 	}
 }
-
 static float adjust_benchmark(struct iq_balancer_t *iq_balancer, complex_t *iq, float phase, float amplitude, int skip_power_calculation)
 {
 	int i;
@@ -251,9 +251,15 @@ static complex_t multiply_complex_complex(complex_t *a, const complex_t *b)
 	return result;
 }
 
-static int compute_corr(struct iq_balancer_t *iq_balancer, complex_t* iq, complex_t* ccorr, int length, int step)
+static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* iq, complex_t* ccorr, int length, int step)
 {
-	complex_t cc, fftPtr[FFTBins];
+	complex_t cc;
+	complex_t* fftPtr = (complex_t*)malloc(FFTBins * sizeof(complex_t));  // Move fftPtr to the heap
+	if (fftPtr == NULL) {
+		// Handle memory allocation failure
+		return 0;
+	}
+
 	int n, m;
 	int i, j;
 	int count = 0;
@@ -310,6 +316,7 @@ static int compute_corr(struct iq_balancer_t *iq_balancer, complex_t* iq, comple
 		}
 	}
 
+	free(fftPtr);  // Free the dynamically allocated memory
 	return count;
 }
 
@@ -337,7 +344,150 @@ static complex_t utility(struct iq_balancer_t *iq_balancer, complex_t* ccorr)
 	return acc;
 }
 
-static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length)
+
+
+
+static void classify_frequency_points(struct iq_balancer_t *iq_balancer, complex_t* iq, int length) {
+    int i;
+    float threshold = PowerThreshold;
+    iq_balancer->optimal_bin = FFTBins / 2;
+
+    for (i = 0; i < FFTBins; i++) {
+        float power = iq[i].re * iq[i].re + iq[i].im * iq[i].im;
+        if (power > threshold) {
+            // Signal point
+            iq_balancer->boost[i] = power;
+        } else {
+            // Noise point
+            iq_balancer->boost[i] = 0;
+        }
+    }
+}
+
+static float estimate_amplitude_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length) {
+    int i;
+    float sum_signal_power = 0;
+    float sum_image_power = 0;
+
+    // Using the frequency-domain statistical characteristics from the paper
+    for (i = 0; i < FFTBins; i++) {
+        if (iq_balancer->boost[i] > 0) {
+            sum_signal_power += iq[i].re * iq[i].re + iq[i].im * iq[i].im;  // Power at signal points
+        } else {
+            sum_image_power += iq[i].re * iq[i].re + iq[i].im * iq[i].im;  // Power at noise points
+        }
+    }
+
+    // Calculate the amplitude imbalance based on signal and image powers
+    float amplitude_imbalance = sqrtf(sum_signal_power / sum_image_power);
+    return amplitude_imbalance;
+}
+
+
+static float estimate_phase_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length) {
+    int i;
+    float sum_phase_signal = 0;
+    float sum_phase_noise = 0;
+
+    // Using the phase calculation based on the classification
+    for (i = 0; i < FFTBins; i++) {
+        if (iq_balancer->boost[i] > 0) {
+            sum_phase_signal += atan2f(iq[i].im, iq[i].re);  // Phase at signal points
+        } else {
+            sum_phase_noise += atan2f(iq[i].im, iq[i].re);  // Phase at noise points
+        }
+    }
+
+    // Average the phase differences to calculate the overall phase imbalance
+    float phase_imbalance = (sum_phase_signal - sum_phase_noise) / FFTBins;
+    return phase_imbalance;
+}
+
+static float gradient_descent(float current_value, float gradient, float learning_rate) {
+    return current_value - learning_rate * gradient;  // simple gradient descent step
+}
+
+static void apply_gradient_descent(struct iq_balancer_t *iq_balancer, float phase_imbalance, float amplitude_imbalance) {
+	#define AMPLITUDE_CLAMP 0.03f  // Based on signal-to-noise energy thresholds (electronics-09-01868)
+	#define PHASE_CLAMP (MATH_PI / 4)  // 45 degrees from qpsk tolerance limits
+
+    float phase_grad = phase_imbalance - iq_balancer->phase;
+    float amplitude_grad = amplitude_imbalance - iq_balancer->amplitude;
+
+    // Gradient descent step
+    iq_balancer->phase = gradient_descent(iq_balancer->phase, phase_grad, PhaseStep);
+    iq_balancer->amplitude = gradient_descent(iq_balancer->amplitude, amplitude_grad, AmplitudeStep);
+
+	// Apply amplitude clamp AFTER the update
+	if (fabs(iq_balancer->amplitude) > AMPLITUDE_CLAMP) {
+		iq_balancer->amplitude = (iq_balancer->amplitude > 0) ? AMPLITUDE_CLAMP : -AMPLITUDE_CLAMP;
+	}
+
+	// Apply phase clamp AFTER the update
+	if (fabs(iq_balancer->phase) > PHASE_CLAMP) {
+		iq_balancer->phase = (iq_balancer->phase > 0) ? PHASE_CLAMP : -PHASE_CLAMP;
+	}
+}
+
+static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
+{
+	int i;
+	float scale = 1.0f / (length - 1);
+
+	for (i = 0; i < length; i++)
+	{
+		float phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
+		float amplitude = (i * iq_balancer->last_amplitude + (length - 1 - i) * iq_balancer->amplitude) * scale;
+
+		float real_part = iq[i].re;
+		float imag_part = iq[i].im;
+
+		iq[i].re += phase * imag_part;
+		iq[i].im += phase * real_part;
+
+		iq[i].re *= 1 + amplitude;
+		iq[i].im *= 1 - amplitude;
+	}
+
+	iq_balancer->last_phase = iq_balancer->phase;
+	iq_balancer->last_amplitude = iq_balancer->amplitude;
+}
+
+
+static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length) {
+	#define CORRUPTION_THRESHOLD 0.1f  // Empirical corruption tolerance (2409.01570v1).
+
+	classify_frequency_points(iq_balancer, iq, length);
+
+	float amplitude_imbalance = estimate_amplitude_imbalance(iq_balancer, iq, length);
+	float phase_imbalance = estimate_phase_imbalance(iq_balancer, iq, length);
+
+	// Calculate sum_signal_power and sum_image_power
+	float sum_signal_power = 0;
+	float sum_image_power = 0;
+	for (int i = 0; i < FFTBins; i++) {
+		if (iq_balancer->boost[i] > 0) {
+			sum_signal_power += iq[i].re * iq[i].re + iq[i].im * iq[i].im;
+		}
+		else {
+			sum_image_power += iq[i].re * iq[i].re + iq[i].im * iq[i].im;
+		}
+	}
+
+	// Corruption threshold check
+	if ((sum_image_power / sum_signal_power) > CORRUPTION_THRESHOLD) {
+		// Handle corruption scenario
+		iq_balancer->phase = iq_balancer->last_phase;
+		iq_balancer->amplitude = iq_balancer->last_amplitude;
+		return;  // Exit early to avoid making adjustments based on corrupted data
+	}
+
+	// Proceed with the rest of the imbalance estimation and adjustments
+	apply_gradient_descent(iq_balancer, phase_imbalance, amplitude_imbalance);
+	adjust_phase_amplitude(iq_balancer, iq, length);  // Apply adjustments
+}
+
+static void estimate_imbalance_old(struct iq_balancer_t *iq_balancer, complex_t* iq, int length)
 {
 	int i, j;
 	float amplitude, phase, mu;
@@ -426,10 +576,14 @@ static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq,
 
 	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
 
+
+
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
 	iq_balancer->raw_amplitudes[iq_balancer->raw_ptr] = amplitude;
 	iq_balancer->raw_phases[iq_balancer->raw_ptr] = phase;
+
+
 	i = iq_balancer->raw_ptr;
 	for (j = 0; j < iq_balancer->no_of_raw - 1; j++)
 	{
@@ -445,29 +599,6 @@ static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq,
 	iq_balancer->amplitude = amplitude;
 }
 
-static void adjust_phase_amplitude(struct iq_balancer_t *iq_balancer, complex_t* iq, int length)
-{
-	int i;
-	float scale = 1.0f / (length - 1);
-
-	for (i = 0; i < length; i++)
-	{
-		float phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
-		float amplitude = (i * iq_balancer->last_amplitude + (length - 1 - i) * iq_balancer->amplitude) * scale;
-
-		float re = iq[i].re;
-		float im = iq[i].im;
-
-		iq[i].re += phase * im;
-		iq[i].im += phase * re;
-
-		iq[i].re *= 1 + amplitude;
-		iq[i].im *= 1 - amplitude;
-	}
-
-	iq_balancer->last_phase = iq_balancer->phase;
-	iq_balancer->last_amplitude = iq_balancer->amplitude;
-}
 
 void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t* iq, int length, uint8_t skip_eval)
 {
@@ -531,6 +662,11 @@ void ADDCALL iq_balancer_configure(struct iq_balancer_t *iq_balancer, int buffer
 struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude)
 {
 	struct iq_balancer_t *instance = (struct iq_balancer_t *) malloc(sizeof(struct iq_balancer_t));
+	if (instance == NULL)
+	{
+		// Handle memory allocation failure
+		return NULL;
+	}
 	memset(instance, 0, sizeof(struct iq_balancer_t));
 
 	instance->phase = initial_phase;

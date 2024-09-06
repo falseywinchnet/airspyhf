@@ -958,14 +958,14 @@ int airspyhf_list_devices(uint64_t *serials, int count)
 
 static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number, int fd)
 {
-	airspyhf_device_t* lib_device;
+
 	flash_config_t config;
 	int libusb_error;
 	int result;
 
 	*device = NULL;
 
-	lib_device = (airspyhf_device_t*) calloc(1, sizeof(airspyhf_device_t));
+	airspyhf_device_t* lib_device = (airspyhf_device_t*) calloc(1, sizeof(airspyhf_device_t));
 	if (lib_device == NULL)
 	{
 		return AIRSPYHF_ERROR;
@@ -976,7 +976,7 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
 	libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
 #endif
 
-	libusb_error = libusb_init(&lib_device->usb_context);
+	libusb_error = libusb_init_context(&lib_device->usb_context, NULL, 0);
 	if (libusb_error != 0)
 	{
 		free(lib_device);
