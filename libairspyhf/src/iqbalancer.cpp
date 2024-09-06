@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
+Contributions to this work were provided by OpenAI Codex and Anthropic's Claude Sonnet, an artifical general intelligence.
 
 
 
@@ -41,7 +41,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define RESTRICT 
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #define UNROLL_LOOP _Pragma("loop(unroll)")
 #define VECTORIZE_LOOP _Pragma("loop(ivdep)")
 #elif defined(__clang__)
@@ -375,39 +375,47 @@ static complex_t utility(struct iq_balancer_t  *iq_balancer, complex_t * RESTRIC
 }
 
 
+static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
+{
+	int i, j;
+	float amplitude, phase, mu;
+	complex_t a, b;
 
+	if (iq_balancer->reset_flag)
+	{
+		iq_balancer->reset_flag = 0;
+		iq_balancer->no_of_avg = -BuffersToSkipOnReset;
+		iq_balancer->maximum_image_power = 0;
+	}
 
-static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, int length) {
-    int i, j;
-    float amplitude, phase, mu;
-    complex_t a, b;
+	if (iq_balancer->no_of_avg < 0)
+	{
+		iq_balancer->no_of_avg++;
+		return;
+	}
+	else if (iq_balancer->no_of_avg == 0)
+	{
+		iq_balancer->integrated_image_power = 0;
+		iq_balancer->integrated_total_power = 0;
+		memset(iq_balancer->boost, 0, FFTBins * sizeof(float));
+		memset(iq_balancer->corr, 0, FFTBins * sizeof(complex_t));
+		memset(iq_balancer->corr_plus, 0, FFTBins * sizeof(complex_t));
+	}
 
-    // Step 1: Handle reset conditions and skip buffers if needed
-    if (iq_balancer->reset_flag) {
-        iq_balancer->reset_flag = 0;
-        iq_balancer->no_of_avg = -BuffersToSkipOnReset;
-        iq_balancer->maximum_image_power = 0;
-    }
+	iq_balancer->maximum_image_power *= MaxPowerDecay;
 
-    if (iq_balancer->no_of_avg < 0) {
-        iq_balancer->no_of_avg++;
-        return;  // Skip until no_of_avg is back to 0
-    }
+	i = compute_corr(iq_balancer, iq, iq_balancer->corr, length, 0);
+	if (i == 0)
+		return;
 
-    i = compute_corr(iq_balancer, iq, iq_balancer->corr, length, 0);
-    if (i == 0) {
-        return;  // If no valid correlation data, exit early
-    }
+	iq_balancer->no_of_avg += i;
+	compute_corr(iq_balancer, iq, iq_balancer->corr_plus, length, 1);
 
-    iq_balancer->no_of_avg += i;
-    compute_corr(iq_balancer, iq, iq_balancer->corr_plus, length, 1);
+	if (iq_balancer->no_of_avg <= iq_balancer->correlation_integration * iq_balancer->fft_integration)
+		return;
 
-    if (iq_balancer->no_of_avg <= iq_balancer->correlation_integration * iq_balancer->fft_integration) {
-        return;  // Not enough data yet, exit early
-    }
+	iq_balancer->no_of_avg = 0;
 
-    iq_balancer->no_of_avg = 0;
-	
 	if (iq_balancer->optimal_bin == FFTBins / 2)
 	{
 		if (iq_balancer->integrated_total_power < iq_balancer->maximum_image_power)
@@ -421,58 +429,58 @@ static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t * RE
 		iq_balancer->maximum_image_power = iq_balancer->integrated_image_power - iq_balancer->integrated_total_power * BoostWindowNorm;
 	}
 
-    // Step 4: Compute phase and amplitude adjustments based on correlations
-    a = utility(iq_balancer, iq_balancer->corr);        // Utility for main signal
-    b = utility(iq_balancer, iq_balancer->corr_plus);   // Utility for adjusted signal
+	a = utility(iq_balancer, iq_balancer->corr);
+	b = utility(iq_balancer, iq_balancer->corr_plus);
 
-    // Phase correction
-    mu = a.im - b.im;
-    if (fabs(mu) > MinDeltaMu) {
-        mu = a.im / mu;
-        if (mu < -MaxMu) mu = -MaxMu;
-        else if (mu > MaxMu) mu = MaxMu;
-    } else {
-        mu = 0;
-    }
-    phase = iq_balancer->phase + PhaseStep * mu;
+	mu = a.im - b.im;
+	if (fabs(mu) > MinDeltaMu)
+	{
+		mu = a.im / mu;
+		if (mu < -MaxMu)
+			mu = -MaxMu;
+		else if (mu > MaxMu)
+			mu = MaxMu;
+	}
+	else
+	{
+		mu = 0;
+	}
 
-    // Amplitude correction
-    mu = a.re - b.re;
-    if (fabs(mu) > MinDeltaMu) {
-        mu = a.re / mu;
-        if (mu < -MaxMu) mu = -MaxMu;
-        else if (mu > MaxMu) mu = MaxMu;
-    } else {
-        mu = 0;
-    }
-    amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
+	phase = iq_balancer->phase + PhaseStep * mu;
 
-    // Step 5: Store the raw phase and amplitude values for lookback averaging
-    if (iq_balancer->no_of_raw < MaxLookback) {
-        iq_balancer->no_of_raw++;
-    }
-    iq_balancer->raw_amplitudes[iq_balancer->raw_ptr] = amplitude;
-    iq_balancer->raw_phases[iq_balancer->raw_ptr] = phase;
+	mu = a.re - b.re;
+	if (fabs(mu) > MinDeltaMu)
+	{
+		mu = a.re / mu;
+		if (mu < -MaxMu)
+			mu = -MaxMu;
+		else if (mu > MaxMu)
+			mu = MaxMu;
+	}
+	else
+	{
+		mu = 0;
+	}
 
-    // Step 6: Perform lookback averaging over the past corrections
-    i = iq_balancer->raw_ptr;
-    for (j = 0; j < iq_balancer->no_of_raw - 1; j++) {
-        i = (i + MaxLookback - 1) & (MaxLookback - 1);  // Circular buffer
-        phase += iq_balancer->raw_phases[i];
-        amplitude += iq_balancer->raw_amplitudes[i];
-    }
+	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
 
-    // Final averaged values for phase and amplitude
-    phase /= iq_balancer->no_of_raw;
-    amplitude /= iq_balancer->no_of_raw;
-
-    // Update the raw pointer for next iteration
-    iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
+	if (iq_balancer->no_of_raw < MaxLookback)
+		iq_balancer->no_of_raw++;
+	iq_balancer->raw_amplitudes[iq_balancer->raw_ptr] = amplitude;
+	iq_balancer->raw_phases[iq_balancer->raw_ptr] = phase;
+	i = iq_balancer->raw_ptr;
+	for (j = 0; j < iq_balancer->no_of_raw - 1; j++)
+	{
+		i = (i + MaxLookback - 1) & (MaxLookback - 1);
+		phase += iq_balancer->raw_phases[i];
+		amplitude += iq_balancer->raw_amplitudes[i];
+	}
+	phase /= iq_balancer->no_of_raw;
+	amplitude /= iq_balancer->no_of_raw;
+	iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
 
 	iq_balancer->phase = phase;
 	iq_balancer->amplitude = amplitude;
-    iq_balancer->maximum_image_power *= MaxPowerDecay;
-
 }
 
 
