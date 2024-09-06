@@ -1,6 +1,6 @@
 # User mode driver for Airspy HF+ 
 
-This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands.
+This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands. This version is modified to make it able to compile and run appropriately on MUSL linux. It is also hinted for pragmas and modern c++ versions for a bit more performance on modern systems.
 
 http://www.airspy.com/airspy-hf-plus
 
