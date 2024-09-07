@@ -74,13 +74,8 @@ struct iq_balancer_t
 
 	float iavg;
 	float qavg;
-	float ibvg;
-	float qbvg;
-	float icvg;
-	float qcvg;
-
-
-
+	float isavg;
+	float qsavg;
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
@@ -279,9 +274,12 @@ static void fft(complex_t * RESTRICT buffer, int length)
 }
 
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float iavg, float qavg, float alpha)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float alpha)
 {
 	int i;
+	float iavg = iq_balancer->iavg;
+	float qavg = iq_balancer->qavg;
+
 	{
 		for (i = 0; i < length; i++)
 		{
@@ -290,13 +288,29 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__
 			iq[i].re -= iavg;
 			iq[i].im -= qavg;
 		}
-
+		iq_balancer->iavg = iavg;
+		iq_balancer->qavg = qavg;
 	}
 }
 
 
+static void adjust_benchmark_no_sum(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, float phase, float amplitude)
+{
+	int i;
+	for (i = 0; i < FFTBins; i++)
+	{
+		float re = iq[i].re;
+		float im = iq[i].im;
 
-static float adjust_benchmark(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, float phase, float amplitude, int skip_power_calculation)
+		iq[i].re += phase * im;
+		iq[i].im += phase * re;
+
+		iq[i].re *= 1 + amplitude;
+		iq[i].im *= 1 - amplitude;
+	}
+}
+
+static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
 {
 	int i;
 	float sum = 0;
@@ -310,12 +324,10 @@ static float adjust_benchmark(struct iq_balancer_t *iq_balancer, complex_t * RES
 
 		iq[i].re *= 1 + amplitude;
 		iq[i].im *= 1 - amplitude;
-		if (!skip_power_calculation)
-			sum += re * re + im * im;
+		sum += re * re + im * im;
 	}
 	return sum;
 }
-
 static complex_t multiply_complex_complex(complex_t * RESTRICT a, const complex_t * RESTRICT b)
 {
 	complex_t result;
@@ -336,14 +348,19 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 	int n, m;
 	int i, j;
 	int count = 0;
-	float power;
+	float power = 0.0f;
 	float phase = iq_balancer->phase + step * PhaseStep;
 	float amplitude = iq_balancer->amplitude + step * AmplitudeStep;
 
 	for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
 	{
 		memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
-		power = adjust_benchmark(iq_balancer, fftPtr, phase, amplitude, step);
+		if (step == 0) {
+			adjust_benchmark_no_sum(iq_balancer, fftPtr, phase, amplitude);
+		}
+		else {
+			power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
+		}
 		if (step == 0)
 		{
 			if (power > MinimumPower)
@@ -372,23 +389,27 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 			}
 			if (step == 0)
 			{
-				for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
-				{
-					power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
-					iq_balancer->boost[i] += power;
-					if (iq_balancer->optimal_bin == FFTBins / 2)
+				if (iq_balancer->optimal_bin == FFTBins / 2) {
+					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
 					{
+						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
+						iq_balancer->boost[i] += power;
 						iq_balancer->integrated_image_power += power;
+
+
 					}
-					else
+				}
+				else{
+					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
 					{
+						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
+						iq_balancer->boost[i] += power;
 						iq_balancer->integrated_image_power += power * __boost_window[abs(FFTBins - i - iq_balancer->optimal_bin)];
 					}
 				}
 			}
 		}
 	}
-
 	free(fftPtr);  // Free the dynamically allocated memory
 	return count;
 }
@@ -557,14 +578,18 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t 
 void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT  iq, int length, uint8_t skip_eval)
 {
 	int count;
+	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
+	const float alpha_min = 0.0001f; // Minimum alpha value
+	const float alpha_decay_rate = 0.3f; 
+	cancel_dc(iq_balancer, iq, length, skip_eval,alpha);
 
-	cancel_dc(iq_balancer, iq, length, skip_eval,iq_balancer->iavg, iq_balancer->qavg, 0.001f);
-	cancel_dc(iq_balancer, iq, length, skip_eval, iq_balancer->ibvg, iq_balancer->qbvg, 0.0001f);
-	cancel_dc(iq_balancer, iq, length, skip_eval, iq_balancer->icvg, iq_balancer->qcvg, 0.00001f);
-
+	iq_balancer->dc_alpha = alpha_decay_rate * iq_balancer->dc_alpha;
 
 	// Ensure `alpha` does not fall below the minimum value
-
+	if (iq_balancer->dc_alpha < alpha_min)
+	{
+		iq_balancer->dc_alpha = alpha_min;
+	}
 	if (!skip_eval)
 	{
 		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
