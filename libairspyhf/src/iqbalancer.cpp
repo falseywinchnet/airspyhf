@@ -74,6 +74,13 @@ struct iq_balancer_t
 
 	float iavg;
 	float qavg;
+	float ibvg;
+	float qbvg;
+	float icvg;
+	float qcvg;
+
+
+
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
@@ -116,7 +123,7 @@ static void __init_library()
 
 	const int length = FFTBins - 1;
 	
-	for (i = 0; i <= length; i++)
+	/*for (i = 0; i <= length; i++)
 	{
 		__fft_window[i] = (float)(
 			+0.35875f
@@ -125,7 +132,52 @@ static void __init_library()
 			- 0.01168f * cos(6.0 * MATH_PI * i / length)
 			);
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
+	}*/
+
+
+	//Albrecht 10 terms 
+	for (i = 0; i <= length; i++)
+	{
+		__fft_window[i] = (float)(
+			+0.2260721603916653632706
+			- 0.3865459981017629121952 * cos(2.0 * MATH_PI * i / length)
+			+ 0.2402581984804387251180 * cos(4.0 * MATH_PI * i / length)
+			- 0.1067615081338829512123 * cos(6.0 * MATH_PI * i / length)
+			+0.03286350853942572526446 * cos(8.0 * MATH_PI * i / length)
+			-0.006643005438025320617263 * cos(10.0 * MATH_PI * i / length)
+			+0.0008050608438216912274761 *  cos(12.0 * MATH_PI * i / length)
+			-0.00004948590944767209041847 * cos(14.0 * MATH_PI * i / length)
+			+0.000001071744648495088830343 * cos(16.0 * MATH_PI * i / length)
+			-0.000000002416881143872775668631 * cos(18.0 * MATH_PI * i / length)
+			);
+		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
+
+	//logit window
+	/*
+	const int odd = FFTBins % 2;
+	const int halfsize = FFTBins / 2 + odd;
+	__fft_window[0] = 0.0f;
+	for (i = halfsize - 2; i > 0; i--)
+	{
+		__fft_window[i] = (float)i / (float)(halfsize - 1);
+		__fft_window[i] /= 1 - __fft_window[i];
+		__fft_window[i] = logf(__fft_window[i]);
+	}
+	float max_val = __fft_window[halfsize - 2] * 2 - __fft_window[halfsize - 3];
+	__fft_window[halfsize - 1] = max_val;
+
+	for (i = halfsize - 1; i > 0; i--)
+	{
+		__fft_window[i] = (__fft_window[i] + max_val) / (max_val * 2);
+	}
+	for (i = halfsize; i < length; i++)
+	{
+		__fft_window[i] = __fft_window[FFTBins - i - 1];
+	}
+	*/
+
+
 
 	__lib_initialized = 1;
 }
@@ -227,14 +279,9 @@ static void fft(complex_t * RESTRICT buffer, int length)
 }
 
 
-
-
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float alpha)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float iavg, float qavg, float alpha)
 {
 	int i;
-	float iavg = iq_balancer->iavg;
-	float qavg = iq_balancer->qavg;
-
 	{
 		for (i = 0; i < length; i++)
 		{
@@ -243,10 +290,10 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__
 			iq[i].re -= iavg;
 			iq[i].im -= qavg;
 		}
-		iq_balancer->iavg = iavg;
-		iq_balancer->qavg = qavg;
+
 	}
 }
+
 
 
 static float adjust_benchmark(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, float phase, float amplitude, int skip_power_calculation)
@@ -510,19 +557,14 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t 
 void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT  iq, int length, uint8_t skip_eval)
 {
 	int count;
-	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
-	const float alpha_min = 0.0001f; // Minimum alpha value
-	const float alpha_decay_rate = 0.3f; 
 
-	cancel_dc(iq_balancer, iq, length, skip_eval,alpha);
+	cancel_dc(iq_balancer, iq, length, skip_eval,iq_balancer->iavg, iq_balancer->qavg, 0.001f);
+	cancel_dc(iq_balancer, iq, length, skip_eval, iq_balancer->ibvg, iq_balancer->qbvg, 0.0001f);
+	cancel_dc(iq_balancer, iq, length, skip_eval, iq_balancer->icvg, iq_balancer->qcvg, 0.00001f);
 
-	iq_balancer->dc_alpha = alpha_decay_rate * iq_balancer->dc_alpha;
 
 	// Ensure `alpha` does not fall below the minimum value
-	if (iq_balancer->dc_alpha < alpha_min)
-	{
-		iq_balancer->dc_alpha = alpha_min;
-	}
+
 	if (!skip_eval)
 	{
 		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
