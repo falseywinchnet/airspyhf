@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex and Anthropic's Claude Sonnet, an artifical general intelligence.
+Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
 
 
 
@@ -62,6 +62,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 #define EPSILON 0.01f
 #define WorkingBufferLength (FFTBins * (1 + FFTIntegration / FFTOverlap))
+
 
 struct iq_balancer_t
 {
