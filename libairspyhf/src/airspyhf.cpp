@@ -38,11 +38,32 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include "iqbalancer.h"
 #include "airspyhf.h"
 #include "airspyhf_commands.h"
+#if defined(_MSC_VER)
+#define RESTRICT __restrict
+#elif defined(__GNUC__) 
+#define RESTRICT restrict
+#elif defined(__clang__)
+#define RESTRICT __restrict
+#else
+#define RESTRICT 
+#endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#define UNROLL_LOOP _Pragma("loop(unroll)")
+#define VECTORIZE_LOOP _Pragma("loop(ivdep)")
+#elif defined(__clang__)
+#define UNROLL_LOOP _Pragma("clang loop unroll(enable)")
+#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
+#elif defined(__GNUC__)
+#define UNROLL_LOOP _Pragma("GCC unroll 4")
+#define VECTORIZE_LOOP _Pragma("GCC ivdep")
+#else
+#define UNROLL_LOOP
+#define VECTORIZE_LOOP
+#endif
 typedef int intbool;
 #define true 1
 #define false 0
-
 
 #ifndef M_PI
 #define M_PI (3.14159265359)
@@ -97,8 +118,8 @@ typedef struct airspyhf_device
 	airspyhf_sample_block_cb_fn callback;
 	pthread_t transfer_thread;
 	pthread_t consumer_thread;
-	intbool transfer_thread_running;
-	intbool consumer_thread_running;
+	bool transfer_thread_running;
+	bool consumer_thread_running;
 	pthread_cond_t consumer_cv;
 	pthread_mutex_t consumer_mp;
 	uint32_t supported_samplerate_count;
@@ -127,8 +148,8 @@ typedef struct airspyhf_device
 	uint32_t dropped_buffers;
 	uint32_t dropped_buffers_queue[RAW_BUFFER_COUNT];
 	airspyhf_complex_int16_t *received_samples_queue[RAW_BUFFER_COUNT];
-	volatile intbool streaming;
-	volatile intbool stop_requested;
+	volatile bool streaming;
+	volatile bool stop_requested;
 	volatile int received_samples_queue_head;
 	volatile int received_samples_queue_tail;
 	volatile int received_buffer_count;
@@ -277,6 +298,7 @@ static int allocate_transfers(airspyhf_device_t* const device)
 	}
 }
 
+
 static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpoint_address, libusb_transfer_cb_fn callback)
 {
 	int error;
@@ -303,20 +325,20 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
 	return AIRSPYHF_ERROR;
 }
 
-static void multiply_complex_complex(airspyhf_complex_float_t *a, const airspyhf_complex_float_t *b)
+static void multiply_complex_complex(airspyhf_complex_float_t * RESTRICT a, const airspyhf_complex_float_t * RESTRICT b)
 {
 	float re = a->re * b->re - a->im * b->im;
 	a->im = a->im * b->re + a->re * b->im;
 	a->re = re;
 }
 
-static void multiply_complex_real(airspyhf_complex_float_t *a, const float b)
+static void multiply_complex_real(airspyhf_complex_float_t * RESTRICT a, const float b)
 {
 	a->re *= b;
 	a->im *= b;
 }
 
-static inline void rotate_complex(airspyhf_complex_float_t *vec, const airspyhf_complex_float_t *rot)
+static inline void rotate_complex(airspyhf_complex_float_t * RESTRICT vec, const airspyhf_complex_float_t * RESTRICT rot)
 {
 	multiply_complex_complex(vec, rot);
 
@@ -325,7 +347,18 @@ static inline void rotate_complex(airspyhf_complex_float_t *vec, const airspyhf_
 	multiply_complex_real(vec, norm);
 }
 
-static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t *src, airspyhf_complex_float_t *dest, int count)
+static inline void multiply_complex_gain(airspyhf_complex_int16_t * RESTRICT src,  airspyhf_complex_float_t * RESTRICT dest, float conversion_gain, int count)
+{
+	VECTORIZE_LOOP
+	for (int i = 0; i < count; i++)
+	{
+		dest[i].re = src[i].re * conversion_gain;
+		dest[i].im = src[i].im * conversion_gain;
+	}
+}
+
+
+static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t  * RESTRICT src, airspyhf_complex_float_t * RESTRICT dest, int count)
 {
 	const float scale = 1.0f / 32768;
 
@@ -338,11 +371,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t 
 
 	conversion_gain = scale * device->filter_gain;
 
-	for (i = 0; i < count; i++)
-	{
-		dest[i].re = src[i].re * conversion_gain;
-		dest[i].im = src[i].im * conversion_gain;
-	}
+	multiply_complex_gain(src, dest, conversion_gain, count);
 
 	if (device->iq_balancer_eval_skip > 0)
 	{
@@ -361,12 +390,12 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t 
 		// Fine tuning
 		if (device->freq_shift != 0)
 		{
-			angle = 2.0 * M_PI * device->freq_shift / (double) device->current_samplerate;
+			angle = 2.0 * M_PI * device->freq_shift / (double)device->current_samplerate;
 
 			vec = device->vec;
 
-			rot.re = (float) cos(angle);
-			rot.im = (float) -sin(angle);
+			rot.re = (float)cos(angle);
+			rot.im = (float)-sin(angle);
 
 			for (i = 0; i < count; i++)
 			{
@@ -378,7 +407,6 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t 
 		}
 	}
 }
-
 static void* consumer_threadproc(void *arg)
 {
 	int sample_count;
@@ -1172,7 +1200,6 @@ int ADDCALL airspyhf_close(airspyhf_device_t* device)
 		free(device->samplerate_architectures);
 		free(device->supported_att_steps);
 		iq_balancer_destroy(device->iq_balancer);
-
 		pthread_cond_destroy(&device->consumer_cv);
 		pthread_mutex_destroy(&device->consumer_mp);
 

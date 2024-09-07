@@ -23,6 +23,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #ifndef __IQ_BALANCER_H__
 #define __IQ_BALANCER_H__
 
+
 #include "airspyhf.h"
 
 #define FFTBins (4 * 1024)
@@ -49,10 +50,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 	#define FFTOverlap 1
 	#define CorrelationIntegration 4
 #else
-	#define BuffersToSkip 2
-	#define FFTIntegration 4
-	#define FFTOverlap 2
-	#define CorrelationIntegration 16
+	#define BuffersToSkip 1
+	#define FFTIntegration 8
+	#define FFTOverlap 4
+	#define CorrelationIntegration 32
 #endif
 
 struct iq_balancer_t;
@@ -60,7 +61,6 @@ struct iq_balancer_t;
 typedef airspyhf_complex_float_t complex_t;
 
 void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
-void apply_gradient_descent(struct iq_balancer_t *iq_balancer, float phase_imbalance, float amplitude_imbalance);
 
 ADDAPI struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
 ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t *iq_balancer, float w);
