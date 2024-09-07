@@ -19,13 +19,13 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\airspyhf.c" />
-    <ClCompile Include="src\iqbalancer.c" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="src\airspyhf.h" />
     <ClInclude Include="src\airspyhf_commands.h" />
     <ClInclude Include="src\iqbalancer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\airspyhf.cpp" />
+    <ClCompile Include="src\iqbalancer.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4DFFEDB8-DAE3-4460-AD45-4FEC689BFB44}</ProjectGuid>
@@ -44,7 +44,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>ClangCL</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -155,6 +155,11 @@
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <ExceptionHandling>false</ExceptionHandling>
       <OmitFramePointers>true</OmitFramePointers>
+      <AdditionalIncludeDirectories>C:\Users\Administrator\Desktop\airspyhf_musl-master\host\prebuilt-dll-2-9-1-release\include;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\libusb-1.0.27\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <StructMemberAlignment>4Bytes</StructMemberAlignment>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -162,6 +167,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>pthreadVCE2.lib;libusb-1.0.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\Administrator\Desktop\airspyhf_musl-master\host\prebuilt-dll-2-9-1-release\lib\x86;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\libusb-1.0.27\VS2022\MS32\dll;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -175,6 +181,7 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;AIRSPY_2015_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
+      <AdditionalIncludeDirectories>C:\Users\Administrator\Desktop\airspyhf_musl-master\host\prebuilt-dll-2-9-1-release\lib\x64;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\libusb-1.0.27\include;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\prebuilt-dll-2-9-1-release\include;C:\Users\Administrator\Desktop\airspyhf_musl-master\libairspyhf\src;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\libusb-1.0.27;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -182,6 +189,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>pthreadVC2.lib;libusb-1.0.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\Administrator\Desktop\airspyhf_musl-master\host\libusb-1.0.27\VS2022\MS64\dll;C:\Users\Administrator\Desktop\airspyhf_musl-master\host\prebuilt-dll-2-9-1-release\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
