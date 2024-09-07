@@ -77,7 +77,7 @@ struct iq_balancer_t
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
-
+	float dc_alpha;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
 
@@ -94,7 +94,7 @@ struct iq_balancer_t
 	int optimal_bin;
 	int reset_flag;
 	int *power_flag;
-
+	
 	complex_t *corr;
 	complex_t *corr_plus;
 	complex_t *working_buffer;
@@ -226,22 +226,15 @@ static void fft(complex_t * RESTRICT buffer, int length)
 	}
 }
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval)
+
+
+
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float alpha)
 {
 	int i;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
-	const float alpha = 0.001f; // ensure zero IF behavior
 
-	if (skip_eval)
-	{
-		for (i = 0; i < length; i++)
-		{
-			iq[i].re -= iavg;
-			iq[i].im -= qavg;
-		}
-	}
-	else
 	{
 		for (i = 0; i < length; i++)
 		{
@@ -254,6 +247,8 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__
 		iq_balancer->qavg = qavg;
 	}
 }
+
+
 static float adjust_benchmark(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, float phase, float amplitude, int skip_power_calculation)
 {
 	int i;
@@ -384,6 +379,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 
 	if (iq_balancer->reset_flag)
 	{
+		iq_balancer->dc_alpha = 1.0f; //set to highest value
 		iq_balancer->reset_flag = 0;
 		iq_balancer->no_of_avg = -BuffersToSkipOnReset;
 		iq_balancer->maximum_image_power = 0;
@@ -514,9 +510,19 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t 
 void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT  iq, int length, uint8_t skip_eval)
 {
 	int count;
+	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
+	const float alpha_min = 0.0001f; // Minimum alpha value
+	const float alpha_decay_rate = 0.3f; 
 
-	cancel_dc(iq_balancer, iq, length, skip_eval);
+	cancel_dc(iq_balancer, iq, length, skip_eval,alpha);
 
+	iq_balancer->dc_alpha = alpha_decay_rate * iq_balancer->dc_alpha;
+
+	// Ensure `alpha` does not fall below the minimum value
+	if (iq_balancer->dc_alpha < alpha_min)
+	{
+		iq_balancer->dc_alpha = alpha_min;
+	}
 	if (!skip_eval)
 	{
 		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
