@@ -50,10 +50,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 	#define FFTOverlap 1
 	#define CorrelationIntegration 4
 #else
-	#define BuffersToSkip 1
-	#define FFTIntegration 8
-	#define FFTOverlap 4
-	#define CorrelationIntegration 32
+	#define BuffersToSkip 2
+	#define FFTIntegration 4
+	#define FFTOverlap 2
+	#define CorrelationIntegration 16
 #endif
 
 struct iq_balancer_t;
