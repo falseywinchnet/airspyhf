@@ -6,7 +6,7 @@ http://www.airspy.com/airspy-hf-plus
 
 ## How to build host software on Windows:
 
-### For VisualStudio 2013 or later:
+### For VisualStudio 2022 or later:
 
 * `git clone https://github.com/airspy/airspyhf.git host`
 * Download https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.7z
@@ -17,29 +17,8 @@ http://www.airspy.com/airspy-hf-plus
   * You should have **host\libpthread-2-9-1-win**
 * Navigate to **src** and Launch **airspyhf.sln** with VisualStudio 2013 or later
 * In Visual Studio, choose **Release**, **x86** or **x64** then **Build Solution**
-
-### For MinGW:
-
-`git clone https://github.com/airspy/airspyhf.git host`
-
-`cd host`
-
-`mkdir build`
-
-`cd build`
-
-Normal version:
-
-`cmake ../ -G "MSYS Makefiles" -DLIBUSB_INCLUDE_DIR=/usr/local/include/libusb-1.0/`
-
-Debug version:
-
-`cmake ../ -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Debug -DLIBUSB_INCLUDE_DIR=/usr/local/include/libusb-1.0/`
-
-`make`
-
-`make install`
-
+*if visual studio cannot find the libraries, manually edit the c++ and linker includes to use the appropriate /include/ directory
+*for libusb, use the "x86/dll" folder if compiling with clang, and copy the dll into the directory with your airspyhf.dll
 
 ## How to build the host software on Linux:
 
