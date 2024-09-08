@@ -25,8 +25,8 @@ http://www.airspy.com/airspy-hf-plus
 ### Prerequisites for Linux (Debian/Ubuntu/Raspbian):
 
 
-* `sudo apt-get install build-essential cmake libusb-1.0-0-dev pkg-config libudev-dev` 
-you'll need to make libusb if your platform's libusb isnt up to date yet.
+* `sudo apt-get install build-essential cmake pkg-config libudev-dev` 
+you'll need to make libusb if your platform's libusb isnt up to date yet. it probably isn't.
 * `wget https://github.com/airspy/airspyhf/archive/master.zip`
 * `tar -xfj https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2`
 * `cd libusb-1.0.27`
