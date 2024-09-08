@@ -31,12 +31,12 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <math.h>
 
 #include "iqbalancer.h"
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) & !defined(__clang__)
 #define RESTRICT __restrict
 #elif defined(__GNUC__) 
 #define RESTRICT restrict
 #elif defined(__clang__)
-#define RESTRICT __restrict
+#define RESTRICT __restrict__
 #else
 #define RESTRICT 
 #endif
@@ -74,8 +74,9 @@ struct iq_balancer_t
 
 	float iavg;
 	float qavg;
-	float isavg;
-	float qsavg;
+	float ibvg;
+	float qbvg;
+
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
@@ -96,7 +97,7 @@ struct iq_balancer_t
 	int optimal_bin;
 	int reset_flag;
 	int *power_flag;
-	
+
 	complex_t *corr;
 	complex_t *corr_plus;
 	complex_t *working_buffer;
@@ -280,7 +281,7 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
 
-	{
+		UNROLL_LOOP
 		for (i = 0; i < length; i++)
 		{
 			iavg = (1 - alpha) * iavg + alpha * iq[i].re;
@@ -290,13 +291,15 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__
 		}
 		iq_balancer->iavg = iavg;
 		iq_balancer->qavg = qavg;
-	}
+	
 }
-
 
 static void adjust_benchmark_no_sum(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT iq, float phase, float amplitude)
 {
 	int i;
+
+	UNROLL_LOOP
+	VECTORIZE_LOOP
 	for (i = 0; i < FFTBins; i++)
 	{
 		float re = iq[i].re;
@@ -314,6 +317,9 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 {
 	int i;
 	float sum = 0;
+
+	UNROLL_LOOP
+	VECTORIZE_LOOP
 	for (i = 0; i < FFTBins; i++)
 	{
 		float re = iq[i].re;
@@ -447,7 +453,6 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 
 	if (iq_balancer->reset_flag)
 	{
-		iq_balancer->dc_alpha = 1.0f; //set to highest value
 		iq_balancer->reset_flag = 0;
 		iq_balancer->no_of_avg = -BuffersToSkipOnReset;
 		iq_balancer->maximum_image_power = 0;
@@ -574,15 +579,21 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t 
 	iq_balancer->last_phase = iq_balancer->phase;
 	iq_balancer->last_amplitude = iq_balancer->amplitude;
 }
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
-void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t * RESTRICT  iq, int length, uint8_t skip_eval)
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, uint8_t skip_eval)
 {
 	int count;
 	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
 	const float alpha_min = 0.0001f; // Minimum alpha value
-	const float alpha_decay_rate = 0.3f; 
-	cancel_dc(iq_balancer, iq, length, skip_eval,alpha);
+	const float alpha_decay_rate = 0.1f;
+	if (skip_eval == 2) {
+		iq_balancer->dc_alpha = 0.5f;
+		skip_eval = 1; //on first buffer, we kick up our dc filter. then we rapidly attenuate
+		//slightly better dc blips in VHF
+	}
 
+	cancel_dc(iq_balancer, iq, length, skip_eval, alpha);
 	iq_balancer->dc_alpha = alpha_decay_rate * iq_balancer->dc_alpha;
 
 	// Ensure `alpha` does not fall below the minimum value
@@ -610,8 +621,9 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t * 
 			}
 		}
 	}
-
 	adjust_phase_amplitude(iq_balancer, iq, length);
+
+
 }
 
 void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t *iq_balancer, float w)
