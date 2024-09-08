@@ -46,8 +46,18 @@ Debug version:
 ### Prerequisites for Linux (Debian/Ubuntu/Raspbian):
 
 
-`sudo apt-get install build-essential cmake libusb-1.0-0-dev pkg-config`
-
+`sudo apt-get install build-essential cmake libusb-1.0-0-dev pkg-config libudev-dev` 
+you'll need to make libusb if your platform's libusb isnt up to date yet.
+`wget https://github.com/airspy/airspyhf/archive/master.zip`
+`tar -xfj https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2"
+`cd libusb-1.0.27`
+except that hilariously, thanks to systemd, which i wish would stop existing, there isnt even headers anymore- it ate them
+`wget https://raw.githubusercontent.com/systemd/systemd/main/src/libudev/libudev.h`
+`sudo mv libudev.h /usr/include/`
+`./configure --prefix=/usr --disable-static`
+ `make`
+ `sudo make install`
+ `cd .../`
 
 ### Build host software on Linux:
 
