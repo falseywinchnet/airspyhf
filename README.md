@@ -38,6 +38,8 @@ except that hilariously, thanks to systemd, which i wish would stop existing, th
 * `sudo make install`
 * `cd .../`
 
+I initially modified some of the c to make it compile on musl. i still think it will work fine there, but some of these instructions may differ for you.
+spyserver depends on a handful of libraries as part of glibc which are not properly emulated with gcompat, so you'll have to make do
 ### Build host software on Linux:
 
 `wget https://github.com/airspy/airspyhf/archive/master.zip`
