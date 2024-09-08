@@ -31,10 +31,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <math.h>
 
 #include "iqbalancer.h"
-#if defined(_MSC_VER) & !defined(__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 #define RESTRICT __restrict
 #elif defined(__GNUC__) 
-#define RESTRICT restrict
+#define RESTRICT __restrict__
 #elif defined(__clang__)
 #define RESTRICT __restrict__
 #else
