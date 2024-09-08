@@ -72,7 +72,11 @@ typedef int intbool;
 #define MAX(a,b) ((a) > (b) ? a : b)
 #define MIN(a,b) ((a) < (b) ? a : b)
 
-#define SAMPLES_TO_TRANSFER (1024 * 2)
+#define SAMPLES_TO_TRANSFER (1024 * 4) 
+//linux devio.c #define USB_SG_SIZE			16384 /* split-size for large txs */
+//windows Buffer Size: 24,576 bytes. 
+//so optimally, we can go for 16kb worth of samples
+
 #define SERIAL_NUMBER_UNUSED (0)
 #define FILE_DESCRIPTOR_UNUSED (-1)
 #define RAW_BUFFER_COUNT (8)
