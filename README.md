@@ -42,19 +42,19 @@ I initially modified some of the c to make it compile on musl. i still think it 
 spyserver depends on a handful of libraries as part of glibc which are not properly emulated with gcompat, so you'll have to make do
 ### Build host software on Linux:
 
-`wget https://github.com/airspy/airspyhf/archive/master.zip`
+* `wget https://github.com/airspy/airspyhf/archive/master.zip`
 
-`unzip master.zip`
+* `unzip master.zip`
 
-`cd airspyhf-master`
+* `cd airspyhf-master`
 
-`mkdir build`
+* `mkdir build`
 
-`cd build`
-`cmake ../ -DLIBUSB_LIBRARIES="/usr/lib/libusb-1.0.so" -DLIBUSB_INCLUDE_DIRS="/usr/include/libusb-1.0" -DINSTALL_UDEV_RULES=ON`
-`make`
-`sudo make install`
-`sudo ldconfig`
+* `cd build`
+* `cmake ../ -DLIBUSB_LIBRARIES="/usr/lib/libusb-1.0.so" -DLIBUSB_INCLUDE_DIRS="/usr/include/libusb-1.0" -DINSTALL_UDEV_RULES=ON`
+* `make`
+* `sudo make install`
+* `sudo ldconfig`
 
 ## Clean CMake temporary files/dirs:
 
