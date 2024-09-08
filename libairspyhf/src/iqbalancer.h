@@ -60,7 +60,7 @@ struct iq_balancer_t;
 
 typedef airspyhf_complex_float_t complex_t;
 
-void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
+static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
 
 ADDAPI struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
 ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t *iq_balancer, float w);
