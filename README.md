@@ -70,13 +70,9 @@ except that hilariously, thanks to systemd, which i wish would stop existing, th
 `mkdir build`
 
 `cd build`
-
-`cmake ../ -DINSTALL_UDEV_RULES=ON`
-
+`cmake ../ -DLIBUSB_LIBRARIES="/usr/lib/libusb-1.0.so" -DLIBUSB_INCLUDE_DIRS="/usr/include/libusb-1.0" -DINSTALL_UDEV_RULES=ON`
 `make`
-
 `sudo make install`
-
 `sudo ldconfig`
 
 ## Clean CMake temporary files/dirs:
@@ -85,6 +81,8 @@ except that hilariously, thanks to systemd, which i wish would stop existing, th
 
 `rm -rf *`
 
+## requirement to make it work
+"LD_PRELOAD=/usr/lib/libusb-1.0.so airspyhf_info/spyserver/etc" if your system has an old libusb it depends on, you'll have to manually bind to this on linux
 
 ## Principal authors:
 
