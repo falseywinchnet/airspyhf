@@ -31,10 +31,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <math.h>
 
 #include "iqbalancer.h"
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER) & !defined(__clang__)
 #define RESTRICT __restrict
 #elif defined(__GNUC__) 
-#define RESTRICT __restrict__
+#define RESTRICT restrict
 #elif defined(__clang__)
 #define RESTRICT __restrict__
 #else
@@ -83,7 +83,6 @@ struct iq_balancer_t
 	float dc_alpha;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
-
 	int skipped_buffers;
 	int buffers_to_skip;
 	int working_buffer_pos;
@@ -96,7 +95,7 @@ struct iq_balancer_t
 	int raw_ptr;
 	int optimal_bin;
 	int reset_flag;
-	int *power_flag;
+	int power_flag[FFTIntegration];
 
 	complex_t *corr;
 	complex_t *corr_plus;
@@ -105,8 +104,11 @@ struct iq_balancer_t
 };
 
 static uint8_t __lib_initialized = 0;
+static complex_t __fft_mem[FFTBins];
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
+static complex_t twiddle_factors[FFTBins];
+unsigned int bit_reversed[FFTBins]; // Precompute this once for N
 
 static void __init_library()
 {
@@ -191,88 +193,78 @@ static void window(complex_t  * RESTRICT buffer, int length)
 	}
 }
 
-static void fft(complex_t * RESTRICT buffer, int length)
-{
-	int nm1 = length - 1;
-	int nd2 = length / 2;
-	int i, j, jm1, k, l, m, le, le2, ip;
-	complex_t u, t, r;
 
-	m = 0;
-	i = length;
-	while (i > 1)
-	{
-		++m;
-		i = (i >> 1);
+
+// Binary-inversion function for sorting data into a frame
+unsigned short int reversebits(unsigned int value, unsigned int bits) {
+	unsigned int n, result = 0;
+	for (n = 0; n < bits; n++) {
+		result <<= 1;
+		result |= (value & 1);
+		value >>= 1;
 	}
+	return result;
+}
 
-	j = nd2;
-
-	for (i = 1; i < nm1; ++i)
-	{
-		if (i < j)
-		{
-			t = buffer[j];
-			buffer[j] = buffer[i];
-			buffer[i] = t;
+// Function for getting table of complex exponents
+static void FFT_ExpCalculation(complex_t* twiddle_factors, unsigned int N) {
+	float pi = MATH_PI;
+	unsigned int step = N;
+	unsigned int i = 0;
+	while (step >= 2) {
+		for (unsigned int k = 0; k < step / 2; k++) {
+			float arg = 2 * pi * k / step;
+			twiddle_factors[i].re = cos(arg);
+			twiddle_factors[i].im = -sin(arg);
+			i++;
 		}
-
-		k = nd2;
-
-		while (k <= j)
-		{
-			j = j - k;
-			k = k / 2;
-		}
-
-		j += k;
-	}
-
-	for (l = 1; l <= m; ++l)
-	{
-		le = 1 << l;
-		le2 = le / 2;
-
-		u.re = 1.0f;
-		u.im = 0.0f;
-
-		r.re = (float)cos(MATH_PI / le2);
-		r.im = (float)-sin(MATH_PI / le2);
-
-		for (j = 1; j <= le2; ++j)
-		{
-			jm1 = j - 1;
-
-			for (i = jm1; i <= nm1; i += le)
-			{
-				ip = i + le2;
-
-				t.re = u.re * buffer[ip].re - u.im * buffer[ip].im;
-				t.im = u.im * buffer[ip].re + u.re * buffer[ip].im;
-
-				buffer[ip].re = buffer[i].re - t.re;
-				buffer[ip].im = buffer[i].im - t.im;
-
-				buffer[i].re += t.re;
-				buffer[i].im += t.im;
-			}
-
-			t.re = u.re * r.re - u.im * r.im;
-			t.im = u.im * r.re + u.re * r.im;
-
-			u.re = t.re;
-			u.im = t.im;
-		}
-	}
-
-	for (i = 0; i < nd2; i++)
-	{
-		j = nd2 + i;
-		t = buffer[i];
-		buffer[i] = buffer[j];
-		buffer[j] = t;
+		step /= 2;
 	}
 }
+
+void fft(complex_t* buffer, unsigned int N) {
+	unsigned int step = N;
+	unsigned int i = 0;
+
+	// Bit-reversal sorting
+	UNROLL_LOOP
+	for (i = 0; i < N; i++) {
+		unsigned int reversed = bit_reversed[i];
+		if (i < reversed) {
+			complex_t temp = buffer[i];
+			buffer[i] = buffer[reversed];
+			buffer[reversed] = temp;
+		}
+	}
+
+	// FFT computation
+		// FFT computation
+	unsigned int twiddle_index = 0;
+	while (step > 1) {
+		unsigned int half_step = step >>1; //divide by two
+		for (unsigned int k = 0; k < half_step; k++) {
+			complex_t twiddle = twiddle_factors[twiddle_index++];
+			for (unsigned int n = 0; n < N; n += step) {
+				unsigned int even_index = n + k;
+				unsigned int odd_index = even_index + half_step;
+
+				complex_t even = buffer[even_index];
+				complex_t odd = buffer[odd_index];
+				complex_t t;
+
+				t.re = odd.re * twiddle.re - odd.im * twiddle.im;
+				t.im = odd.re * twiddle.im + odd.im * twiddle.re;
+
+				buffer[odd_index].re = even.re - t.re;
+				buffer[odd_index].im = even.im - t.im;
+				buffer[even_index].re = even.re + t.re;
+				buffer[even_index].im = even.im + t.im;
+			}
+		}
+		step = half_step;
+	}
+}
+
 
 
 static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float alpha)
@@ -345,11 +337,8 @@ static complex_t multiply_complex_complex(complex_t * RESTRICT a, const complex_
 static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT iq, complex_t * RESTRICT  ccorr, int length, int step)
 {
 	complex_t cc;
-	complex_t* fftPtr = (complex_t*)malloc(FFTBins * sizeof(complex_t));  // Move fftPtr to the heap
-	if (fftPtr == NULL) {
-		// Handle memory allocation failure
-		return 0;
-	}
+	complex_t* fftPtr = __fft_mem;
+
 
 	int n, m;
 	int i, j;
@@ -416,7 +405,6 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 			}
 		}
 	}
-	free(fftPtr);  // Free the dynamically allocated memory
 	return count;
 }
 
@@ -648,8 +636,6 @@ void ADDCALL iq_balancer_configure(struct iq_balancer_t *iq_balancer, int buffer
 	iq_balancer->fft_overlap = fft_overlap;
 	iq_balancer->correlation_integration = correlation_integration;
 
-	free(iq_balancer->power_flag);
-	iq_balancer->power_flag = (int *)malloc(iq_balancer->fft_integration * sizeof(int));
 	memset(iq_balancer->power_flag, 0, iq_balancer->fft_integration * sizeof(int));
 
 	iq_balancer->reset_flag = 1;
@@ -664,7 +650,10 @@ struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float ini
 		return NULL;
 	}
 	memset(instance, 0, sizeof(struct iq_balancer_t));
-
+	FFT_ExpCalculation(twiddle_factors, FFTBins);
+	for (unsigned int i = 0; i < FFTBins; i++) {
+		bit_reversed[i] = reversebits(i, __builtin_ctz(FFTBins));
+	}
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
 
@@ -678,8 +667,8 @@ struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float ini
 	instance->corr = (complex_t *)malloc(FFTBins * sizeof(complex_t));
 	instance->corr_plus = (complex_t *)malloc(FFTBins * sizeof(complex_t));
 	instance->working_buffer = (complex_t *)malloc(WorkingBufferLength * sizeof(complex_t));
+
 	instance->boost = (float *)malloc(FFTBins * sizeof(float));
-	instance->power_flag = (int *)malloc(instance->fft_integration * sizeof(int));
 
 	__init_library();
 	return instance;
@@ -690,7 +679,7 @@ void ADDCALL iq_balancer_destroy(struct iq_balancer_t *iq_balancer)
 	free(iq_balancer->corr);
 	free(iq_balancer->corr_plus);
 	free(iq_balancer->working_buffer);
+
 	free(iq_balancer->boost);
-	free(iq_balancer->power_flag);
 	free(iq_balancer);
 }
