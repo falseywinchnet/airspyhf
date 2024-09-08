@@ -112,6 +112,7 @@ typedef struct {
 
 typedef struct airspyhf_device
 {
+	int switched_frequency;
 	libusb_context* usb_context;
 	libusb_device_handle* usb_device;
 	struct libusb_transfer** transfers;
@@ -349,6 +350,7 @@ static inline void rotate_complex(airspyhf_complex_float_t * RESTRICT vec, const
 
 static inline void multiply_complex_gain(airspyhf_complex_int16_t * RESTRICT src,  airspyhf_complex_float_t * RESTRICT dest, float conversion_gain, int count)
 {
+	UNROLL_LOOP
 	VECTORIZE_LOOP
 	for (int i = 0; i < count; i++)
 	{
@@ -377,6 +379,10 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t 
 	{
 		device->iq_balancer_eval_skip--;
 		iqb_eval_skip = 1;
+	}
+	if (device->switched_frequency) {
+		iqb_eval_skip = 2;
+		device->switched_frequency = 0;  // Reset the flag after applying the window
 	}
 
 	if (device->enable_dsp)
@@ -1010,6 +1016,7 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
 		return AIRSPYHF_ERROR;
 	}
 
+
 	if (fd == FILE_DESCRIPTOR_UNUSED) {
 		airspyhf_open_device(lib_device,
 			&result,
@@ -1420,6 +1427,7 @@ int ADDCALL airspyhf_set_freq_double(airspyhf_device_t* device, const double fre
 
 	if (device->freq_khz != freq_khz)
 	{
+		device->switched_frequency = 1;  // Set the flag on frequency switch
 		device->iq_balancer_eval_skip = IQ_BALANCER_EVAL_SKIP;
 
 		buf[0] = (uint8_t)((freq_khz >> 24) & 0xff);
