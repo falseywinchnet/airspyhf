@@ -80,7 +80,6 @@ struct iq_balancer_t
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
-	float dc_alpha = 0.001f;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
 	int skipped_buffers;
@@ -279,9 +278,10 @@ void fft(complex_t* buffer, unsigned int N) {
 
 
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval, float alpha)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, uint8_t skip_eval)
 {
 	int i;
+	const float alpha = 0.001f;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
 
@@ -585,8 +585,7 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t 
 void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, uint8_t skip_eval)
 {
 	int count;
-	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
-	cancel_dc(iq_balancer, iq, length, skip_eval, alpha);
+	cancel_dc(iq_balancer, iq, length, skip_eval);
 
 
 	if (!skip_eval)
