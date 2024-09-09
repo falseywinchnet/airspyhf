@@ -192,20 +192,6 @@ static void window(complex_t  * RESTRICT buffer, int length)
 	}
 }
 
-static void fftshift(complex_t* RESTRICT buffer, int length)
-{
-	int half_length = length / 2;
-	int i;
-
-	for (i = 0; i < half_length; i++)
-	{
-		// Swap the first half with the second half
-		complex_t temp = buffer[i];
-		buffer[i] = buffer[i + half_length];
-		buffer[i + half_length] = temp;
-	}
-}
-
 // Binary-inversion function for sorting data into a frame
 unsigned short int reversebits(unsigned int value, unsigned int bits) {
 	unsigned int n, result = 0;
@@ -384,7 +370,6 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 		{
 			count++;
 			window(fftPtr, FFTBins);
-			fftshift(fftPtr, FFTBins); //perform dft cisoid centering 
 			fft(fftPtr, FFTBins);
 			for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
 			{
