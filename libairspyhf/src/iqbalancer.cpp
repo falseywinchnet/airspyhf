@@ -80,7 +80,7 @@ struct iq_balancer_t
 	float integrated_total_power;
 	float integrated_image_power;
 	float maximum_image_power;
-	float dc_alpha;
+	float dc_alpha = 0.001f;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
 	int skipped_buffers;
@@ -193,7 +193,19 @@ static void window(complex_t  * RESTRICT buffer, int length)
 	}
 }
 
+static void fftshift(complex_t* RESTRICT buffer, int length)
+{
+	int half_length = length / 2;
+	int i;
 
+	for (i = 0; i < half_length; i++)
+	{
+		// Swap the first half with the second half
+		complex_t temp = buffer[i];
+		buffer[i] = buffer[i + half_length];
+		buffer[i + half_length] = temp;
+	}
+}
 
 // Binary-inversion function for sorting data into a frame
 unsigned short int reversebits(unsigned int value, unsigned int bits) {
@@ -333,19 +345,7 @@ static complex_t multiply_complex_complex(complex_t * RESTRICT a, const complex_
 	result.im = a->im * b->re + a->re * b->im;
 	return result;
 }
-static void fftshift(complex_t* RESTRICT buffer, int length)
-{
-	int half_length = length / 2;
-	int i;
 
-	for (i = 0; i < half_length; i++)
-	{
-		// Swap the first half with the second half
-		complex_t temp = buffer[i];
-		buffer[i] = buffer[i + half_length];
-		buffer[i + half_length] = temp;
-	}
-}
 static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT iq, complex_t * RESTRICT  ccorr, int length, int step)
 {
 	complex_t cc;
@@ -385,7 +385,6 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 			count++;
 			window(fftPtr, FFTBins);
 			fftshift(fftPtr, FFTBins); //perform dft cisoid centering 
-
 			fft(fftPtr, FFTBins);
 			for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
 			{
@@ -587,22 +586,9 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* R
 {
 	int count;
 	const float alpha = iq_balancer->dc_alpha; // ensure zero IF behavior
-	const float alpha_min = 0.0001f; // Minimum alpha value
-	const float alpha_decay_rate = 0.1f;
-	if (skip_eval == 2) {
-		iq_balancer->dc_alpha = 0.5f;
-		skip_eval = 1; //on first buffer, we kick up our dc filter. then we rapidly attenuate
-		//slightly better dc blips in VHF
-	}
-
 	cancel_dc(iq_balancer, iq, length, skip_eval, alpha);
-	iq_balancer->dc_alpha = alpha_decay_rate * iq_balancer->dc_alpha;
 
-	// Ensure `alpha` does not fall below the minimum value
-	if (iq_balancer->dc_alpha < alpha_min)
-	{
-		iq_balancer->dc_alpha = alpha_min;
-	}
+
 	if (!skip_eval)
 	{
 		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
