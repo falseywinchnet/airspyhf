@@ -333,7 +333,19 @@ static complex_t multiply_complex_complex(complex_t * RESTRICT a, const complex_
 	result.im = a->im * b->re + a->re * b->im;
 	return result;
 }
+static void fftshift(complex_t* RESTRICT buffer, int length)
+{
+	int half_length = length / 2;
+	int i;
 
+	for (i = 0; i < half_length; i++)
+	{
+		// Swap the first half with the second half
+		complex_t temp = buffer[i];
+		buffer[i] = buffer[i + half_length];
+		buffer[i + half_length] = temp;
+	}
+}
 static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT iq, complex_t * RESTRICT  ccorr, int length, int step)
 {
 	complex_t cc;
@@ -372,6 +384,8 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t * RESTRICT 
 		{
 			count++;
 			window(fftPtr, FFTBins);
+			fftshift(fftPtr, FFTBins); //perform dft cisoid centering 
+
 			fft(fftPtr, FFTBins);
 			for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
 			{
