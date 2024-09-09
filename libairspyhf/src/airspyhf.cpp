@@ -4,7 +4,6 @@ Copyright (c) 2013-2017, Ian Gilmour <ian@sdrsharp.com>
 Copyright (c) 2013-2017, Benjamin Vernoux <bvernoux@airspy.com>
 Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>
 Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
-Copyright (c) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
 
 All rights reserved.
 
@@ -39,10 +38,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include "iqbalancer.h"
 #include "airspyhf.h"
 #include "airspyhf_commands.h"
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER)
 #define RESTRICT __restrict
 #elif defined(__GNUC__) 
-#define RESTRICT __restrict__
+#define RESTRICT restrict
 #elif defined(__clang__)
 #define RESTRICT __restrict
 #else
@@ -117,7 +116,6 @@ typedef struct {
 
 typedef struct airspyhf_device
 {
-	int switched_frequency;
 	libusb_context* usb_context;
 	libusb_device_handle* usb_device;
 	struct libusb_transfer** transfers;
@@ -385,10 +383,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t 
 		device->iq_balancer_eval_skip--;
 		iqb_eval_skip = 1;
 	}
-	if (device->switched_frequency) {
-		iqb_eval_skip = 2;
-		device->switched_frequency = 0;  // Reset the flag after applying the window
-	}
+
 
 	if (device->enable_dsp)
 	{
@@ -1432,7 +1427,6 @@ int ADDCALL airspyhf_set_freq_double(airspyhf_device_t* device, const double fre
 
 	if (device->freq_khz != freq_khz)
 	{
-		device->switched_frequency = 1;  // Set the flag on frequency switch
 		device->iq_balancer_eval_skip = IQ_BALANCER_EVAL_SKIP;
 
 		buf[0] = (uint8_t)((freq_khz >> 24) & 0xff);
