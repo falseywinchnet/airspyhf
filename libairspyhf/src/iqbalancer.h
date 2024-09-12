@@ -37,7 +37,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define MaxMu 50.0f
 #define MinDeltaMu 0.1f
 #define DcTimeConst 1e-4f
-#define MinimumPower 0.01f
+#define MinimumPower 1e-2f
 #define PowerThreshold 0.5f
 #define BuffersToSkipOnReset 2
 #define MaxPowerDecay 0.98f
@@ -45,27 +45,26 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define BoostWindowNorm (MaxPowerRatio / 95)
 
 #if defined(__arm__) && !defined(__force_hiq__)
-	#define BuffersToSkip 4
-	#define FFTIntegration 2
-	#define FFTOverlap 1
-	#define CorrelationIntegration 4
+#define BuffersToSkip 4
+#define FFTIntegration 2
+#define FFTOverlap 1
+#define CorrelationIntegration 4
 #else
-	#define BuffersToSkip 2
-	#define FFTIntegration 4
-	#define FFTOverlap 2
-	#define CorrelationIntegration 16
+#define BuffersToSkip 2
+#define FFTIntegration 4
+#define FFTOverlap 2
+#define CorrelationIntegration 16
 #endif
 
 struct iq_balancer_t;
 
 typedef airspyhf_complex_float_t complex_t;
 
-static void estimate_imbalance(struct iq_balancer_t *iq_balancer, complex_t* iq, int length);
 
-ADDAPI struct iq_balancer_t * ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
-ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t *iq_balancer, float w);
-ADDAPI void ADDCALL iq_balancer_configure(struct iq_balancer_t *iq_balancer, int buffers_to_skip, int fft_integration, int fft_overlap, int correlation_integration);
-ADDAPI void ADDCALL iq_balancer_process(struct iq_balancer_t *iq_balancer, complex_t* iq, int length, uint8_t skip_eval);
-ADDAPI void ADDCALL iq_balancer_destroy(struct iq_balancer_t *iq_balancer);
+ADDAPI struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
+ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, float w);
+ADDAPI void ADDCALL iq_balancer_configure(struct iq_balancer_t* iq_balancer, int buffers_to_skip, int fft_integration, int fft_overlap, int correlation_integration);
+ADDAPI void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, bool skip_eval);
+ADDAPI void ADDCALL iq_balancer_destroy(struct iq_balancer_t* iq_balancer);
 
 #endif
