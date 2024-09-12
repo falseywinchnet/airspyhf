@@ -31,60 +31,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <math.h>
 
 #include "iqbalancer.h"
-#include <stdint.h>
-#if defined(_MSC_VER) // MSVC Compiler
 
-#include <intrin.h>
-#pragma intrinsic(_BitScanForward)
-#pragma intrinsic(_BitScanReverse)
 
-uint32_t __inline ctz(uint32_t value) // Count trailing zeros
-{
-	unsigned long trailing_zero = 0;
-	if (_BitScanForward(&trailing_zero, value))
-	{
-		return trailing_zero;
-	}
-	else
-	{
-		// If value is zero, return 32 (undefined result)
-		return 32;
-	}
-}
 
-uint32_t __inline clz(uint32_t value) // Count leading zeros
-{
-	unsigned long leading_zero = 0;
-	if (_BitScanReverse(&leading_zero, value))
-	{
-		return 31 - leading_zero;
-	}
-	else
-	{
-		// If value is zero, return 32 (undefined result)
-		return 32;
-	}
-}
-
-#elif defined(__GNUC__) || defined(__clang__) // GCC or Clang
-
-uint32_t __inline ctz(uint32_t value) // Count trailing zeros
-{
-	if (value == 0)
-		return 32; // If value is zero, return 32
-	return __builtin_ctz(value); // Use GCC/Clang built-in
-}
-
-uint32_t __inline clz(uint32_t value) // Count leading zeros
-{
-	if (value == 0)
-		return 32; // If value is zero, return 32
-	return __builtin_clz(value); // Use GCC/Clang built-in
-}
-
-#else
-#error Unsupported compiler
-#endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #define RESTRICT __restrict
@@ -97,18 +46,15 @@ uint32_t __inline clz(uint32_t value) // Count leading zeros
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define UNROLL_LOOP _Pragma("loop(unroll)")
-#define VECTORIZE_LOOP _Pragma("loop(ivdep)")
+#define VECTORIZE_LOOP _Pragma("loop(ivdep, unroll)")
 #elif defined(__clang__)
-#define UNROLL_LOOP _Pragma("clang loop unroll(enable)")
-#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
+#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable) unroll(enable)")
 #elif defined(__GNUC__)
-#define UNROLL_LOOP _Pragma("GCC unroll 4")
-#define VECTORIZE_LOOP _Pragma("GCC ivdep")
+#define VECTORIZE_LOOP _Pragma("GCC ivdep") _Pragma("GCC unroll 4")
 #else
-#define UNROLL_LOOP
 #define VECTORIZE_LOOP
 #endif
+
 
 
 #ifndef MATH_PI
@@ -190,6 +136,7 @@ static void __init_library()
 
 
 	//Albrecht 10 terms 
+	VECTORIZE_LOOP
 	for (i = 0; i <= length; i++)
 	{
 		__fft_window[i] = (float)(
@@ -206,7 +153,7 @@ static void __init_library()
 			);
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
-
+	VECTORIZE_LOOP
 	for (int i = 0; i < length / 2; i++) {
 		float angle = -2.0f * MATH_PI * i / length;
 		twiddle_factors[i].re = cosf(angle);
