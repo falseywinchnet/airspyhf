@@ -97,16 +97,12 @@ uint32_t __inline clz(uint32_t value) // Count leading zeros
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define UNROLL_LOOP _Pragma("loop(unroll)")
 #define VECTORIZE_LOOP _Pragma("loop(ivdep)")
 #elif defined(__clang__)
-#define UNROLL_LOOP _Pragma("clang loop unroll(enable)")
 #define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
 #elif defined(__GNUC__)
-#define UNROLL_LOOP _Pragma("GCC unroll 4")
 #define VECTORIZE_LOOP _Pragma("GCC ivdep")
 #else
-#define UNROLL_LOOP
 #define VECTORIZE_LOOP
 #endif
 
@@ -237,8 +233,7 @@ static void window(complex_t* RESTRICT buffer, int length)
 {
 	int i;
 
-	VECTORIZE_LOOP
-		UNROLL_LOOP
+		VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
 			buffer[i].re *= __fft_window[i];
@@ -278,7 +273,7 @@ void fft(complex_t* buffer, unsigned int N) {
 	unsigned int i = 0;
 
 	// Bit-reversal sorting
-	UNROLL_LOOP
+	
 		for (i = 0; i < N; i++) {
 			unsigned int reversed = bit_reversed[i];
 			if (i < reversed) {
@@ -326,6 +321,7 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 	float qavg = iq_balancer->qavg;
 	if (!eval)
 	{
+		VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
 			iq[i].re -= iavg;
@@ -333,13 +329,15 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 		}
 	}
 	else {
-		UNROLL_LOOP
 			for (i = 0; i < length; i++)
 			{
 				iavg = (1 - alpha) * iavg + alpha * iq[i].re;
-				qavg = (1 - alpha) * qavg + alpha * iq[i].im;
 				iq[i].re -= iavg;
-				iq[i].im -= qavg;
+			}
+			for (i = 0; i < length; i++)
+			{
+			qavg = (1 - alpha) * qavg + alpha * iq[i].im;
+			iq[i].im -= qavg;
 			}
 		iq_balancer->iavg = iavg;
 		iq_balancer->qavg = qavg;
@@ -351,7 +349,6 @@ static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t
 {
 	int i;
 
-	UNROLL_LOOP
 		VECTORIZE_LOOP
 		for (i = 0; i < FFTBins; i++)
 		{
@@ -371,7 +368,6 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 	int i;
 	float sum = 0;
 
-	UNROLL_LOOP
 		VECTORIZE_LOOP
 		for (i = 0; i < FFTBins; i++)
 		{
@@ -620,8 +616,7 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 	int i;
 	float scale = 1.0f / (length - 1);
 
-	VECTORIZE_LOOP
-		UNROLL_LOOP
+		VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
 			float phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
