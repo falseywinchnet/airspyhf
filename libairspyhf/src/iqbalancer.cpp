@@ -384,7 +384,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 	float power = 0.0f;
 	float phase = iq_balancer->phase + step * PhaseStep;
 	float amplitude = iq_balancer->amplitude + step * AmplitudeStep;
-	const int optimal_bin = iq_balancer->optimal_bin;
+	int optimal_bin = iq_balancer->optimal_bin;
 	if (step == 0)
 	{
 		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
