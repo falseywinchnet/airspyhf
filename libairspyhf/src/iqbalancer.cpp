@@ -25,12 +25,12 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 
 #include "iqbalancer.h"
-
 #include <stdint.h>
 #if defined(_MSC_VER) // MSVC Compiler
 
@@ -97,20 +97,25 @@ uint32_t __inline clz(uint32_t value) // Count leading zeros
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
+#define UNROLL_LOOP _Pragma("loop(unroll)")
 #define VECTORIZE_LOOP _Pragma("loop(ivdep)")
 #elif defined(__clang__)
+#define UNROLL_LOOP _Pragma("clang loop unroll(enable)")
 #define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
 #elif defined(__GNUC__)
+#define UNROLL_LOOP _Pragma("GCC unroll 4")
 #define VECTORIZE_LOOP _Pragma("GCC ivdep")
 #else
+#define UNROLL_LOOP
 #define VECTORIZE_LOOP
 #endif
+
 
 #ifndef MATH_PI
 #define MATH_PI 3.14159265359
 #endif
 
-#define EPSILON 1e-8f
+#define EPSILON 1e-4f
 #define WorkingBufferLength (FFTBins * (1 + FFTIntegration / FFTOverlap))
 
 
@@ -156,8 +161,10 @@ static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
-static complex_t twiddle_factors[FFTBins];
-unsigned int bit_reversed[FFTBins]; // Precompute this once for N
+static complex_t twiddle_factors[FFTBins/2];
+void init_twiddle_factors(int max_fft_size) {
+	
+}
 
 static void __init_library()
 {
@@ -200,29 +207,11 @@ static void __init_library()
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
 
-	//logit window
-	/*
-	const int odd = FFTBins % 2;
-	const int halfsize = FFTBins / 2 + odd;
-	__fft_window[0] = 0.0f;
-	for (i = halfsize - 2; i > 0; i--)
-	{
-		__fft_window[i] = (float)i / (float)(halfsize - 1);
-		__fft_window[i] /= 1 - __fft_window[i];
-		__fft_window[i] = logf(__fft_window[i]);
+	for (int i = 0; i < length / 2; i++) {
+		float angle = -2.0f * MATH_PI * i / length;
+		twiddle_factors[i].re = cosf(angle);
+		twiddle_factors[i].im = sinf(angle);
 	}
-	float max_val = __fft_window[halfsize - 2] * 2 - __fft_window[halfsize - 3];
-	__fft_window[halfsize - 1] = max_val;
-
-	for (i = halfsize - 1; i > 0; i--)
-	{
-		__fft_window[i] = (__fft_window[i] + max_val) / (max_val * 2);
-	}
-	for (i = halfsize; i < length; i++)
-	{
-		__fft_window[i] = __fft_window[FFTBins - i - 1];
-	}
-	*/
 
 
 
@@ -241,86 +230,74 @@ static void window(complex_t* RESTRICT buffer, int length)
 		}
 }
 
-// Binary-inversion function for sorting data into a frame
-unsigned short int reversebits(unsigned int value, unsigned int bits) {
-	unsigned int n, result = 0;
-	for (n = 0; n < bits; n++) {
-		result <<= 1;
-		result |= (value & 1);
-		value >>= 1;
+static void fft(complex_t* buffer, int length)
+{
+	int nm1 = length - 1;
+	int nd2 = length / 2;
+	int m = 0;
+	complex_t t;
+
+	// Calculate m = log2(length)
+	for (int i = length; i > 1; i >>= 1) {
+		++m;
 	}
-	return result;
-}
 
-// Function for getting table of complex exponents
-static void FFT_ExpCalculation(complex_t* twiddle_factors, unsigned int N) {
-	float pi = MATH_PI;
-	unsigned int step = N;
-	unsigned int i = 0;
-	while (step >= 2) {
-		for (unsigned int k = 0; k < step / 2; k++) {
-			float arg = 2 * pi * k / step;
-			twiddle_factors[i].re = cos(arg);
-			twiddle_factors[i].im = -sin(arg);
-			i++;
+	// Bit-reverse ordering
+	int j = nd2;
+	for (int i = 1; i < nm1; ++i) {
+		if (i < j) {
+			t = buffer[j];
+			buffer[j] = buffer[i];
+			buffer[i] = t;
 		}
-		step /= 2;
+		int k = nd2;
+		while (k <= j) {
+			j -= k;
+			k >>= 1;
+		}
+		j += k;
 	}
-}
-
-void fft(complex_t* buffer, unsigned int N) {
-	unsigned int step = N;
-	unsigned int i = 0;
-
-	// Bit-reversal sorting
-	
-		for (i = 0; i < N; i++) {
-			unsigned int reversed = bit_reversed[i];
-			if (i < reversed) {
-				complex_t temp = buffer[i];
-				buffer[i] = buffer[reversed];
-				buffer[reversed] = temp;
-			}
-		}
 
 	// FFT computation
-		// FFT computation
-	unsigned int twiddle_index = 0;
-	while (step > 1) {
-		unsigned int half_step = step >> 1; //divide by two
-		for (unsigned int k = 0; k < half_step; k++) {
-			complex_t twiddle = twiddle_factors[twiddle_index++];
-			for (unsigned int n = 0; n < N; n += step) {
-				unsigned int even_index = n + k;
-				unsigned int odd_index = even_index + half_step;
+	for (int l = 1; l <= m; ++l) {
+		int le = 1 << l;
+		int le2 = le >> 1;
+		int step = length / le;
 
-				complex_t even = buffer[even_index];
-				complex_t odd = buffer[odd_index];
-				complex_t t;
+		for (int j = 0; j < le2; ++j) {
+			for (int i = j; i < length; i += le) {
+				int ip = i + le2;
+				complex_t twiddle = twiddle_factors[j * step];
 
-				t.re = odd.re * twiddle.re - odd.im * twiddle.im;
-				t.im = odd.re * twiddle.im + odd.im * twiddle.re;
+				t.re = twiddle.re * buffer[ip].re - twiddle.im * buffer[ip].im;
+				t.im = twiddle.im * buffer[ip].re + twiddle.re * buffer[ip].im;
 
-				buffer[odd_index].re = even.re - t.re;
-				buffer[odd_index].im = even.im - t.im;
-				buffer[even_index].re = even.re + t.re;
-				buffer[even_index].im = even.im + t.im;
+				buffer[ip].re = buffer[i].re - t.re;
+				buffer[ip].im = buffer[i].im - t.im;
+
+				buffer[i].re += t.re;
+				buffer[i].im += t.im;
 			}
 		}
-		step = half_step;
+	}
+
+	// Swap real and imaginary parts
+	for (int i = 0; i < nd2; i++) {
+		j = nd2 + i;
+		t = buffer[i];
+		buffer[i] = buffer[j];
+		buffer[j] = t;
 	}
 }
 
-
-
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, uint8_t eval)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, bool eval)
 {
 	int i;
-	const float alpha = 0.001f;
+	const float alpha = DcTimeConst;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
-	if (!eval)
-	{
+
+	if (!eval) {
 		VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
@@ -329,26 +306,24 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 		}
 	}
 	else {
+		
 			for (i = 0; i < length; i++)
 			{
 				iavg = (1 - alpha) * iavg + alpha * iq[i].re;
+				qavg = (1 - alpha) * qavg + alpha * iq[i].im;
 				iq[i].re -= iavg;
-			}
-			for (i = 0; i < length; i++)
-			{
-			qavg = (1 - alpha) * qavg + alpha * iq[i].im;
-			iq[i].im -= qavg;
+				iq[i].im -= qavg;
 			}
 		iq_balancer->iavg = iavg;
 		iq_balancer->qavg = qavg;
 	}
-
 }
 
 static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
 {
 	int i;
 
+	
 		VECTORIZE_LOOP
 		for (i = 0; i < FFTBins; i++)
 		{
@@ -368,6 +343,7 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 	int i;
 	float sum = 0;
 
+	
 		VECTORIZE_LOOP
 		for (i = 0; i < FFTBins; i++)
 		{
@@ -383,6 +359,8 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 		}
 	return sum;
 }
+
+
 static complex_t multiply_complex_complex(complex_t* RESTRICT a, const complex_t* RESTRICT b)
 {
 	complex_t result;
@@ -391,33 +369,41 @@ static complex_t multiply_complex_complex(complex_t* RESTRICT a, const complex_t
 	return result;
 }
 
+
 static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, complex_t* RESTRICT  ccorr, int length, int step)
 {
-	//experimental refactor to provide better vectorization and unrolling
 	complex_t cc;
-	complex_t* fftPtr = __fft_mem;
+	complex_t* RESTRICT fftPtr = __fft_mem;
+	float* RESTRICT boost = iq_balancer->boost;
+	float* RESTRICT boost_window = __boost_window;
+	int* RESTRICT power_flag = iq_balancer->power_flag;
 
-	int n, m;
+	int n, m = 0;
 	int i, j;
 	int count = 0;
 	float power = 0.0f;
 	float phase = iq_balancer->phase + step * PhaseStep;
 	float amplitude = iq_balancer->amplitude + step * AmplitudeStep;
+	const int optimal_bin = iq_balancer->optimal_bin;
 	if (step == 0)
 	{
 		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
 		{
 			memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
-			power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
-			if (power <= MinimumPower)
-			{
-					iq_balancer->power_flag[m] = 0;
+
+				power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
+
+				if (power > MinimumPower)
+				{
+					power_flag[m] = 1;
 					iq_balancer->integrated_total_power += power;
-			}
-			else
+				}
+				else
+				{
+					power_flag[m] = 0;
+				}
+			if (power_flag[m] == 1)
 			{
-				iq_balancer->power_flag[m] = 1;
-				iq_balancer->integrated_total_power += power;
 				count++;
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
@@ -430,28 +416,29 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 					ccorr[j].re = ccorr[i].re;
 					ccorr[j].im = ccorr[i].im;
 				}
-				if (iq_balancer->optimal_bin == FFTBins / 2) {
+
+				if (optimal_bin == FFTBins / 2) {
+					VECTORIZE_LOOP
 					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
 					{
 						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
-						iq_balancer->boost[i] += power;
+						boost[i] += power;
 						iq_balancer->integrated_image_power += power;
-
-
 					}
 				}
 				else {
-					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
-					{
-						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
-						iq_balancer->boost[i] += power;
-						iq_balancer->integrated_image_power += power * __boost_window[abs(FFTBins - i - iq_balancer->optimal_bin)];
-					}
+						for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
+						{
+							power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
+							boost[i] += power;
+							iq_balancer->integrated_image_power += power * boost_window[abs(FFTBins - i - optimal_bin)];
+						}
 				}
+				
 			}
 		}
 	}
-	else 
+	else
 	{
 		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
 		{
@@ -462,6 +449,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 				count++;
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
+				
 				for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
 				{
 					cc = multiply_complex_complex(fftPtr + i, fftPtr + j);
@@ -642,7 +630,6 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* R
 	int count;
 	cancel_dc(iq_balancer, iq, length, eval);
 
-
 	if (eval)
 	{
 		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
@@ -704,10 +691,6 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 		return NULL;
 	}
 	memset(instance, 0, sizeof(struct iq_balancer_t));
-	FFT_ExpCalculation(twiddle_factors, FFTBins);
-	for (unsigned int i = 0; i < FFTBins; i++) {
-		bit_reversed[i] = reversebits(i, ctz(FFTBins));
-	}
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
 
