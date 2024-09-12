@@ -380,7 +380,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t*
 
 	if (device->iq_balancer_eval_skip > 0)
 	{
-		device->iq_balancer_eval_skip = device->iq_balancer_eval_skip - 1;
+		device->iq_balancer_eval_skip -= 1;
 		iqb_eval_process = false;
 	}
 	else
