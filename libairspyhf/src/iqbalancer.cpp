@@ -154,8 +154,8 @@ static void __init_library()
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
 	VECTORIZE_LOOP
-	for (int i = 0; i < length / 2; i++) {
-		float angle = -2.0f * MATH_PI * i / length;
+	for (int i = 0; i < FFTBins / 2; i++) {
+		float angle = -2.0f * MATH_PI * i / FFTBins;
 		twiddle_factors[i].re = cosf(angle);
 		twiddle_factors[i].im = sinf(angle);
 	}
