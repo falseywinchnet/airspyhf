@@ -33,8 +33,6 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include "iqbalancer.h"
 
 
-
-
 #if defined(_MSC_VER) && !defined(__clang__)
 #define RESTRICT __restrict
 #elif defined(__GNUC__) 
@@ -54,7 +52,6 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #else
 #define VECTORIZE_LOOP
 #endif
-
 
 
 #ifndef MATH_PI
@@ -108,9 +105,6 @@ static complex_t __fft_mem[FFTBins];
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
 static complex_t twiddle_factors[FFTBins/2];
-void init_twiddle_factors(int max_fft_size) {
-	
-}
 
 static void __init_library()
 {
@@ -237,10 +231,9 @@ static void fft(complex_t* buffer, int length)
 	}
 }
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, bool eval)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, bool eval, float alpha)
 {
 	int i;
-	const float alpha = DcTimeConst;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
 
@@ -363,6 +356,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 					ccorr[j].re = ccorr[i].re;
 					ccorr[j].im = ccorr[i].im;
 				}
+
 
 				if (optimal_bin == FFTBins / 2) {
 					VECTORIZE_LOOP
@@ -572,10 +566,11 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 }
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
-void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval)
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval,double freq_hz)
 {
 	int count;
-	cancel_dc(iq_balancer, iq, length, eval);
+	float alpha = ((2 * MATH_PI * (freq_hz / FFTBins)/2) / freq_hz); //the rate we want to attenuate
+	cancel_dc(iq_balancer, iq, length, eval, alpha);
 
 	if (eval)
 	{
