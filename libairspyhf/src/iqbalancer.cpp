@@ -93,7 +93,7 @@ struct iq_balancer_t
 	int optimal_bin;
 	int reset_flag;
 	int power_flag[FFTIntegration];
-
+	float alpha;
 	complex_t* corr;
 	complex_t* corr_plus;
 	complex_t* working_buffer;
@@ -568,9 +568,21 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 
 void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval,double freq_hz)
 {
+	float lowest_alpha = 1e-5;
+	float decay_factor = 0.995f; // Adjust this to control decay speed 
+	float current_alpha = iq_balancer->alpha;
+
 	int count;
-	float alpha = ((2 * MATH_PI * (freq_hz / FFTBins)/2) / freq_hz); //the rate we want to attenuate
-	cancel_dc(iq_balancer, iq, length, eval, alpha);
+	if (!eval) {
+		current_alpha = ((2 * MATH_PI * (freq_hz / FFTBins) / 2) / freq_hz); //the rate we want to attenuate
+	}
+	else {
+		current_alpha = current_alpha * decay_factor + lowest_alpha * (1 - decay_factor);
+	}
+	iq_balancer->alpha = current_alpha;
+
+	iq_balancer->alpha = current_alpha;
+	cancel_dc(iq_balancer, iq, length, eval, current_alpha);
 
 	if (eval)
 	{
