@@ -1,6 +1,6 @@
 # User mode driver for Airspy HF+ 
 
-This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands. This version is modified to make it able to compile and run appropriately on MUSL linux, the latest versions of raspberry pi OS(with the latest libusb 1.0.27), and with as few warnings or errors as possible. It is also refactored for enhanced vectorization, and hinted for pragmas and modern c++ versions, for a 100% performance boost.
+This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands. This version is modified to make it able to compile and run appropriately on MUSL linux, the latest versions of raspberry pi OS(with the latest libusb 1.0.27), and with as few warnings or errors as possible. It is also refactored for a performance boost.
 
 http://www.airspy.com/airspy-hf-plus
 
