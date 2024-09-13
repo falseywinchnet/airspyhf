@@ -31,18 +31,18 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define BinsToOptimize (FFTBins/25)
 #define EdgeBinsToSkip (FFTBins/22)
 #define CenterBinsToSkip 2
-#define MaxLookback 4
-#define PhaseStep 1e-2f
-#define AmplitudeStep 1e-2f
-#define MaxMu 50.0f
-#define MinDeltaMu 0.1f
-#define DcTimeConst 1e-4f
+#define MaxLookback 2
+#define PhaseStep 0.368f
+#define AmplitudeStep 0.368f
+#define MaxMu 1.0f
+#define MinDeltaMu 0.03f
 #define MinimumPower 1e-2f
-#define PowerThreshold 0.5f
+#define PowerThreshold 0.3f
 #define BuffersToSkipOnReset 2
-#define MaxPowerDecay 0.98f
-#define MaxPowerRatio 0.8f
+#define MaxPowerDecay 0.95f
+#define MaxPowerRatio 0.66f
 #define BoostWindowNorm (MaxPowerRatio / 95)
+
 
 #if defined(__arm__) && !defined(__force_hiq__)
 #define BuffersToSkip 4
@@ -64,7 +64,7 @@ typedef airspyhf_complex_float_t complex_t;
 ADDAPI struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float initial_amplitude);
 ADDAPI void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, float w);
 ADDAPI void ADDCALL iq_balancer_configure(struct iq_balancer_t* iq_balancer, int buffers_to_skip, int fft_integration, int fft_overlap, int correlation_integration);
-ADDAPI void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, bool skip_eval);
+ADDAPI void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, bool skip_eval,double freq_hz);
 ADDAPI void ADDCALL iq_balancer_destroy(struct iq_balancer_t* iq_balancer);
 
 #endif
