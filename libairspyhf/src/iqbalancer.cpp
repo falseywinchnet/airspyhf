@@ -231,7 +231,7 @@ static void fft(complex_t* buffer, int length)
 	}
 }
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* __restrict__ iq, int length, bool eval, float alpha)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, bool eval, float alpha)
 {
 	int i;
 	float iavg = iq_balancer->iavg;
