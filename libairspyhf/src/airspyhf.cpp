@@ -353,7 +353,6 @@ static inline void rotate_complex(airspyhf_complex_float_t* RESTRICT vec, const 
 
 static inline void multiply_complex_gain(airspyhf_complex_int16_t* RESTRICT src, airspyhf_complex_float_t* RESTRICT dest, float conversion_gain, int count)
 {
-	UNROLL_LOOP
 		VECTORIZE_LOOP
 		for (int i = 0; i < count; i++)
 		{
@@ -394,7 +393,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t*
 		if (!device->is_low_if)
 		{
 			// Zero IF requires external IQ correction
-			iq_balancer_process(device->iq_balancer, dest, count, iqb_eval_process);
+			iq_balancer_process_internal(device->iq_balancer, dest, count, iqb_eval_process, (double)device->current_samplerate);
 		}
 
 		// Fine tuning
