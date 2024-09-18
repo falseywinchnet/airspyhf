@@ -53,7 +53,6 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define VECTORIZE_LOOP
 #endif
 
-
 #ifndef MATH_PI
 #define MATH_PI 3.14159265359
 #endif
@@ -93,7 +92,7 @@ struct iq_balancer_t
 	int optimal_bin;
 	int reset_flag;
 	int power_flag[FFTIntegration];
-	float alpha;
+	float alpha = 1e-4;
 	complex_t* corr;
 	complex_t* corr_plus;
 	complex_t* working_buffer;
@@ -246,7 +245,7 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 		}
 	}
 	else {
-		
+			
 			for (i = 0; i < length; i++)
 			{
 				iavg = (1 - alpha) * iavg + alpha * iq[i].re;
@@ -359,7 +358,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 
 
 				if (optimal_bin == FFTBins / 2) {
-					VECTORIZE_LOOP
+					
 					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
 					{
 						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
@@ -410,6 +409,9 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 {
 	int i;
 	int j;
+	float* RESTRICT boost_window = __boost_window;
+	float* RESTRICT boost = iq_balancer->boost;
+
 	float invskip = 1.0f / EdgeBinsToSkip;
 	complex_t acc = { 0, 0 };
 	for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
@@ -420,9 +422,9 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 			float weight = (distance > EdgeBinsToSkip) ? 1.0f : (distance * invskip);
 			if (iq_balancer->optimal_bin != FFTBins / 2)
 			{
-				weight *= __boost_window[abs(iq_balancer->optimal_bin - i)];
+				weight *= boost_window[abs(iq_balancer->optimal_bin - i)];
 			}
-			weight *= iq_balancer->boost[j] / (iq_balancer->boost[i] + EPSILON);
+			weight *= boost[j] / (boost[i] + EPSILON);
 			acc.re += ccorr[i].re * weight;
 			acc.im += ccorr[i].im * weight;
 		}
@@ -564,9 +566,13 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 	iq_balancer->last_phase = iq_balancer->phase;
 	iq_balancer->last_amplitude = iq_balancer->amplitude;
 }
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, bool skip_eval)
+{
+	//included for compatibility only. You should move to using the new approach
+	iq_balancer_process_internal(iq_balancer,iq, length, !skip_eval, 650000.0);
+}
 
-void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval,double freq_hz)
+void ADDCALL iq_balancer_process_internal(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval,double freq_hz)
 {
 	float lowest_alpha = 1e-5;
 	float decay_factor = 0.995f; // Adjust this to control decay speed 
