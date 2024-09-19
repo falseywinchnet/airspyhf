@@ -63,19 +63,17 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 struct iq_balancer_t
 {
-	float phase;
-	float last_phase;
+	double phase;
+	double last_phase;
 
-	float amplitude;
-	float last_amplitude;
+	double amplitude;
+	double last_amplitude;
 
-	float iavg;
-	float qavg;
-	float ibvg;
-	float qbvg;
+	double iavg;
+	double qavg;
 
-	float integrated_total_power;
-	float integrated_image_power;
+	double integrated_total_power;
+	double integrated_image_power;
 	float maximum_image_power;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
@@ -97,6 +95,7 @@ struct iq_balancer_t
 	complex_t* corr_plus;
 	complex_t* working_buffer;
 	float* boost;
+
 };
 
 static uint8_t __lib_initialized = 0;
@@ -104,6 +103,7 @@ static complex_t __fft_mem[FFTBins];
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
 static complex_t twiddle_factors[FFTBins/2];
+
 
 static void __init_library()
 {
@@ -152,8 +152,6 @@ static void __init_library()
 		twiddle_factors[i].re = cosf(angle);
 		twiddle_factors[i].im = sinf(angle);
 	}
-
-
 
 	__lib_initialized = 1;
 }
@@ -230,23 +228,24 @@ static void fft(complex_t* buffer, int length)
 	}
 }
 
+
+
 static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
 {
 	int i;
-	float iavg = iq_balancer->iavg;
-	float qavg = iq_balancer->qavg;
-	
-			for (i = 0; i < length; i++)
-			{
-				iavg = (1 - alpha) * iavg + alpha * iq[i].re;
-				qavg = (1 - alpha) * qavg + alpha * iq[i].im;
-				iq[i].re -= iavg;
-				iq[i].im -= qavg;
-			}
-		iq_balancer->iavg = iavg;
-		iq_balancer->qavg = qavg;
-}
+	double iavg = iq_balancer->iavg;
+	double qavg = iq_balancer->qavg;//must use double accumulator because of rounding error over time
 
+	for (i = 0; i < length; i++)
+	{
+		iavg = (1 - alpha) * iavg + alpha * iq[i].re;
+		qavg = (1 - alpha) * qavg + alpha * iq[i].im;
+		iq[i].re -= iavg;
+		iq[i].im -= qavg;
+	}
+	iq_balancer->iavg = iavg;
+	iq_balancer->qavg = qavg;
+}
 static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
 {
 	int i;
@@ -269,7 +268,7 @@ static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t
 static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
 {
 	int i;
-	float sum = 0;
+	double sum = 0;
 
 	
 		VECTORIZE_LOOP
@@ -285,7 +284,7 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 			iq[i].im *= 1 - amplitude;
 			sum += re * re + im * im;
 		}
-	return sum;
+	return (float)sum;
 }
 
 
@@ -564,6 +563,7 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* R
 
 	cancel_dc(iq_balancer, iq, length, lowest_alpha);
 
+
 	count = WorkingBufferLength - iq_balancer->working_buffer_pos;
 		if (count >= length)
 		{
@@ -621,6 +621,7 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 		// Handle memory allocation failure
 		return NULL;
 	}
+	
 	memset(instance, 0, sizeof(struct iq_balancer_t));
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
@@ -647,7 +648,6 @@ void ADDCALL iq_balancer_destroy(struct iq_balancer_t* iq_balancer)
 	free(iq_balancer->corr);
 	free(iq_balancer->corr_plus);
 	free(iq_balancer->working_buffer);
-
 	free(iq_balancer->boost);
 	free(iq_balancer);
 }
