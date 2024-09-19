@@ -103,7 +103,7 @@ static const char str_prefix_serial_airspyhf[STR_PREFIX_SERIAL_AIRSPYHF_SIZE] =
 
 #define LIBUSB_CTRL_TIMEOUT_MS (500)
 
-#define IQ_BALANCER_EVAL_SKIP (RAW_BUFFER_COUNT)
+#define IQ_BALANCER_EVAL_SKIP 0// (RAW_BUFFER_COUNT)
 
 #pragma pack(push,1)
 
@@ -379,7 +379,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t*
 
 	if (device->iq_balancer_eval_skip > 0)
 	{
-		device->iq_balancer_eval_skip -= 1;
+		device->iq_balancer_eval_skip = device->iq_balancer_eval_skip - 1;
 		iqb_eval_process = false;
 	}
 	else
