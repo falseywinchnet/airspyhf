@@ -116,6 +116,7 @@ typedef struct {
 
 typedef struct airspyhf_device
 {
+	bool reset_dc;
 	libusb_context* usb_context;
 	libusb_device_handle* usb_device;
 	struct libusb_transfer** transfers;
@@ -371,21 +372,10 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t*
 	airspyhf_complex_float_t rot;
 	double angle;
 	float conversion_gain;
-	bool iqb_eval_process = true;
 
 	conversion_gain = scale * device->filter_gain;
 
 	multiply_complex_gain(src, dest, conversion_gain, count);
-
-	if (device->iq_balancer_eval_skip > 0)
-	{
-		device->iq_balancer_eval_skip = device->iq_balancer_eval_skip - 1;
-		iqb_eval_process = false;
-	}
-	else
-	{
-		iqb_eval_process = true;
-	}
 
 
 	if (device->enable_dsp)
@@ -393,7 +383,7 @@ static void convert_samples(airspyhf_device_t* device, airspyhf_complex_int16_t*
 		if (!device->is_low_if)
 		{
 			// Zero IF requires external IQ correction
-			iq_balancer_process_internal(device->iq_balancer, dest, count, iqb_eval_process, (double)device->current_samplerate);
+			iq_balancer_process(device->iq_balancer, dest, count);
 		}
 
 		// Fine tuning
@@ -1156,7 +1146,7 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
 	}
 
 	lib_device->iq_balancer = iq_balancer_create(INITIAL_PHASE, INITIAL_AMPLITUDE);
-	lib_device->iq_balancer_eval_skip = 0;
+	lib_device->reset_dc = true;
 
 	*device = lib_device;
 
@@ -1430,7 +1420,7 @@ int ADDCALL airspyhf_set_freq_double(airspyhf_device_t* device, const double fre
 
 	if (device->freq_khz != freq_khz)
 	{
-		device->iq_balancer_eval_skip = IQ_BALANCER_EVAL_SKIP;
+		device->reset_dc = true;
 
 		buf[0] = (uint8_t)((freq_khz >> 24) & 0xff);
 		buf[1] = (uint8_t)((freq_khz >> 16) & 0xff);
