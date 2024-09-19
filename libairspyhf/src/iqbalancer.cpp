@@ -230,22 +230,12 @@ static void fft(complex_t* buffer, int length)
 	}
 }
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, bool eval, float alpha)
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
 {
 	int i;
 	float iavg = iq_balancer->iavg;
 	float qavg = iq_balancer->qavg;
-
-	if (!eval) {
-		VECTORIZE_LOOP
-		for (i = 0; i < length; i++)
-		{
-			iq[i].re -= iavg;
-			iq[i].im -= qavg;
-		}
-	}
-	else {
-			
+	
 			for (i = 0; i < length; i++)
 			{
 				iavg = (1 - alpha) * iavg + alpha * iq[i].re;
@@ -255,7 +245,6 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 			}
 		iq_balancer->iavg = iavg;
 		iq_balancer->qavg = qavg;
-	}
 }
 
 static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
@@ -566,33 +555,16 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 	iq_balancer->last_phase = iq_balancer->phase;
 	iq_balancer->last_amplitude = iq_balancer->amplitude;
 }
-void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, bool skip_eval)
-{
-	//included for compatibility only. You should move to using the new approach
-	iq_balancer_process_internal(iq_balancer,iq, length, !skip_eval, 650000.0);
-}
 
-void ADDCALL iq_balancer_process_internal(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length, bool eval,double freq_hz)
-{
-	float lowest_alpha = 1e-5;
-	float decay_factor = 0.995f; // Adjust this to control decay speed 
-	float current_alpha = iq_balancer->alpha;
 
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length)
+{
+	float lowest_alpha = 5e-5;
 	int count;
-	if (!eval) {
-		current_alpha = ((2 * MATH_PI * (freq_hz / FFTBins) / 2) / freq_hz); //the rate we want to attenuate
-	}
-	else {
-		current_alpha = current_alpha * decay_factor + lowest_alpha * (1 - decay_factor);
-	}
-	iq_balancer->alpha = current_alpha;
 
-	iq_balancer->alpha = current_alpha;
-	cancel_dc(iq_balancer, iq, length, eval, current_alpha);
+	cancel_dc(iq_balancer, iq, length, lowest_alpha);
 
-	if (eval)
-	{
-		count = WorkingBufferLength - iq_balancer->working_buffer_pos;
+	count = WorkingBufferLength - iq_balancer->working_buffer_pos;
 		if (count >= length)
 		{
 			count = length;
@@ -609,7 +581,6 @@ void ADDCALL iq_balancer_process_internal(struct iq_balancer_t* iq_balancer, com
 				estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
 			}
 		}
-	}
 	adjust_phase_amplitude(iq_balancer, iq, length);
 
 
