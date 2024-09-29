@@ -32,15 +32,15 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define EdgeBinsToSkip (FFTBins/22)
 #define CenterBinsToSkip 2
 #define MaxLookback 4
-#define PhaseStep 0.368f
-#define AmplitudeStep 0.368f
-#define MaxMu 1.0f
-#define MinDeltaMu 0.03f
+#define PhaseStep 1e-2f
+#define AmplitudeStep 1e-2f
+#define MaxMu 50.0f
+#define MinDeltaMu 0.01f
 #define MinimumPower 1e-2f
-#define PowerThreshold 0.3f
+#define PowerThreshold 0.5f
 #define BuffersToSkipOnReset 2
-#define MaxPowerDecay 0.95f
-#define MaxPowerRatio 0.66f
+#define MaxPowerDecay 0.98f
+#define MaxPowerRatio 0.8f
 #define BoostWindowNorm (MaxPowerRatio / 95)
 
 
