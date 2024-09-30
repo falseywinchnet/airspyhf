@@ -468,35 +468,8 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	a = utility(iq_balancer, iq_balancer->corr);
 	b = utility(iq_balancer, iq_balancer->corr_plus);
 
-	mu = a.im - b.im;
-	if (fabs(mu) > MinDeltaMu)
-	{
-		mu = a.im / mu;
-		if (mu < -MaxMu)
-			mu = -MaxMu;
-		else if (mu > MaxMu)
-			mu = MaxMu;
-	}
-	else
-	{
-		mu = 0;
-	}
 
 	phase = iq_balancer->phase;// +PhaseStep * mu;
-
-	mu = a.re - b.re;
-	if (fabs(mu) > MinDeltaMu)
-	{
-		mu = a.re / mu;
-		if (mu < -MaxMu)
-			mu = -MaxMu;
-		else if (mu > MaxMu)
-			mu = MaxMu;
-	}
-	else
-	{
-		mu = 0;
-	}
 
 	amplitude = iq_balancer->amplitude;// +AmplitudeStep * mu;
 
@@ -518,7 +491,6 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	iq_balancer->phase = phase;
 	iq_balancer->amplitude = amplitude;
 }
-
 
 static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude) {
 	int i;
@@ -706,7 +678,7 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 	instance->amplitude = initial_amplitude;
 	instance->phase_gradient = 0;
 	instance->amplitude_gradient = 0;
-	instance->learning_rate = 0.0898f;  // delta t / bandwidth
+	instance->learning_rate = 0.1f;//0.0898f;  // delta t / bandwidth
 	instance->optimal_bin = FFTBins / 2;
 
 	instance->buffers_to_skip = BuffersToSkip;
