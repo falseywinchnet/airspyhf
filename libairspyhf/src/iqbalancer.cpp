@@ -60,18 +60,22 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define EPSILON 1e-4f
 #define WorkingBufferLength (FFTBins * (1 + FFTIntegration / FFTOverlap))
 
+#define BUFFER_SIZE 4096
+#define TRIPLE_BUFFER_SIZE (BUFFER_SIZE * 3)
+#define MAX_EXTREMA BUFFER_SIZE+2  // Adjust as needed
+
 
 struct iq_balancer_t
 {
 	double phase;
 	double last_phase;
-
+	double phase_gradient;
+	double amplitude_gradient;
+	double learning_rate;  // Controls how fast we update based on the gradient
 	double amplitude;
 	double last_amplitude;
-
 	double iavg;
 	double qavg;
-
 	double integrated_total_power;
 	double integrated_image_power;
 	float maximum_image_power;
@@ -97,6 +101,7 @@ struct iq_balancer_t
 	float* boost;
 
 };
+
 
 static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
@@ -230,22 +235,7 @@ static void fft(complex_t* buffer, int length)
 
 
 
-static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
-{
-	int i;
-	double iavg = iq_balancer->iavg;
-	double qavg = iq_balancer->qavg;//must use double accumulator because of rounding error over time
 
-	for (i = 0; i < length; i++)
-	{
-		iavg = (1 - alpha) * iavg + alpha * iq[i].re;
-		qavg = (1 - alpha) * qavg + alpha * iq[i].im;
-		iq[i].re -= iavg;
-		iq[i].im -= qavg;
-	}
-	iq_balancer->iavg = iavg;
-	iq_balancer->qavg = qavg;
-}
 static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
 {
 	int i;
@@ -492,7 +482,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	phase = iq_balancer->phase + PhaseStep * mu;
+	phase = iq_balancer->phase;// +PhaseStep * mu;
 
 	mu = a.re - b.re;
 	if (fabs(mu) > MinDeltaMu)
@@ -508,7 +498,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
+	amplitude = iq_balancer->amplitude;// +AmplitudeStep * mu;
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
@@ -529,6 +519,76 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	iq_balancer->amplitude = amplitude;
 }
 
+
+static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude) {
+	int i;
+	float image_power = 0.0f;
+	complex_t* RESTRICT fftPtr = __fft_mem;
+
+	// Allocate memory for local FFT buffer if needed
+
+
+	// Copy the first FFTBins samples to the FFT buffer
+	memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
+
+	// Apply phase and amplitude corrections
+	for (i = 0; i < FFTBins; i++) {
+		float re = fftPtr[i].re;
+		float im = fftPtr[i].im;
+
+		// Apply phase correction
+		fftPtr[i].re += phase * im;
+		fftPtr[i].im += phase * re;
+
+		// Apply amplitude correction
+		fftPtr[i].re *= 1 + amplitude;
+		fftPtr[i].im *= 1 - amplitude;
+	}
+
+	// Apply window function
+	window(fftPtr, FFTBins);
+
+	// Perform FFT
+	fft(fftPtr, FFTBins);
+
+	// Compute image power
+	int k_start = FFTBins / 2 + CenterBinsToSkip; // Start of image frequencies
+	int k_end = FFTBins - EdgeBinsToSkip;         // End of image frequencies
+
+	for (i = k_start; i < k_end; i++) {
+		float re = fftPtr[i].re;
+		float im = fftPtr[i].im;
+		image_power += re * re + im * im;
+	}
+	return image_power;
+}
+
+
+static void apply_gradient_update(struct iq_balancer_t* iq_balancer, complex_t* iq, int length) {
+	float delta_phi = PhaseStep;        // Small increment for phase
+	float delta_A = AmplitudeStep;      // Small increment for amplitude
+
+	// Compute cost at current parameters
+	float J_current = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude);
+
+	// Compute cost with perturbed phase
+	float J_phi = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase + delta_phi, iq_balancer->amplitude);
+
+	// Compute cost with perturbed amplitude
+	float J_A = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude + delta_A);
+
+	// Approximate gradients
+	float gradient_phi = (J_phi - J_current) / delta_phi;
+	float gradient_A = (J_A - J_current) / delta_A;
+
+	// Update parameters using gradients
+	iq_balancer->phase -= iq_balancer->learning_rate * gradient_phi;
+	iq_balancer->amplitude -= iq_balancer->learning_rate * gradient_A;
+
+	// Optional: Limit the range of phase and amplitude
+	// iq_balancer->phase = fmax(fmin(iq_balancer->phase, MAX_PHASE), MIN_PHASE);
+	// iq_balancer->amplitude = fmax(fmin(iq_balancer->amplitude, MAX_AMPLITUDE), MIN_AMPLITUDE);
+}
 
 static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length)
 {
@@ -556,13 +616,29 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 }
 
 
-void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  iq, int length)
+
+static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
 {
-	float lowest_alpha = 5e-5;
+	int i;
+	double iavg = iq_balancer->iavg;
+	double qavg = iq_balancer->qavg;//must use double accumulator because of rounding error over time
+
+	for (i = 0; i < length; i++)
+	{
+		iavg = (1 - alpha) * iavg + alpha * iq[i].re;
+		qavg = (1 - alpha) * qavg + alpha * iq[i].im;
+		iq[i].re -= iavg;
+		iq[i].im -= qavg;
+	}
+	iq_balancer->iavg = iavg;
+	iq_balancer->qavg = qavg;
+}
+
+
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  iq, int length)
+{
 	int count;
-
-	cancel_dc(iq_balancer, iq, length, lowest_alpha);
-
+	cancel_dc(iq_balancer, iq, length,1e-4f);
 
 	count = WorkingBufferLength - iq_balancer->working_buffer_pos;
 		if (count >= length)
@@ -579,8 +655,11 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* R
 			{
 				iq_balancer->skipped_buffers = 0;
 				estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
+				apply_gradient_update(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
+
 			}
 		}
+
 	adjust_phase_amplitude(iq_balancer, iq, length);
 
 
@@ -625,7 +704,9 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 	memset(instance, 0, sizeof(struct iq_balancer_t));
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
-
+	instance->phase_gradient = 0;
+	instance->amplitude_gradient = 0;
+	instance->learning_rate = 0.0898f;  // delta t / bandwidth
 	instance->optimal_bin = FFTBins / 2;
 
 	instance->buffers_to_skip = BuffersToSkip;
