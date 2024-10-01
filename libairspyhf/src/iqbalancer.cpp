@@ -105,6 +105,9 @@ struct iq_balancer_t
 
 static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
+static complex_t __fft_mem2[FFTBins];
+static complex_t __fft_mem3[FFTBins];
+
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
 static complex_t twiddle_factors[FFTBins/2];
@@ -411,6 +414,90 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 }
 
 
+void compute_cost_and_gradients(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude, float* cost, float* gradient_phi, float* gradient_A) {
+	int i;
+
+	// Allocate memory for FFTs and derivatives
+	complex_t* fftPtr = __fft_mem;
+	complex_t* dfft_dphi = __fft_mem2; // Allocate separate memory for derivatives
+	complex_t* dfft_dA = __fft_mem3;
+
+	// Apply corrections and compute the corrected signal and its derivatives
+	for (i = 0; i < FFTBins; i++) {
+		float re = iq[i].re;
+		float im = iq[i].im;
+
+		// Apply phase correction
+		float I_prime = re + phase * im;
+		float Q_prime = im + phase * re;
+
+		// Apply amplitude correction
+		float I_double_prime = (1 + amplitude) * I_prime;
+		float Q_double_prime = (1 - amplitude) * Q_prime;
+
+		fftPtr[i].re = I_double_prime;
+		fftPtr[i].im = Q_double_prime;
+
+		// Compute derivatives with respect to phase
+		float dI_dphi = (1 + amplitude) * im;
+		float dQ_dphi = (1 - amplitude) * re;
+
+		dfft_dphi[i].re = dI_dphi;
+		dfft_dphi[i].im = dQ_dphi;
+
+		// Compute derivatives with respect to amplitude
+		dfft_dA[i].re = I_prime;   // dI_dA = I'_n
+		dfft_dA[i].im = -Q_prime;  // dQ_dA = -Q'_n
+	}
+
+	// Apply window function to all signals
+	window(fftPtr, FFTBins);
+	window(dfft_dphi, FFTBins);
+	window(dfft_dA, FFTBins);
+
+	// Perform FFTs
+	fft(fftPtr, FFTBins);
+	fft(dfft_dphi, FFTBins);
+	fft(dfft_dA, FFTBins);
+
+	// Initialize cost and gradients
+	float image_power = 0.0f;
+	float grad_phi = 0.0f;
+	float grad_A = 0.0f;
+
+	int k_start = FFTBins / 2 + CenterBinsToSkip; // Start of image frequencies
+	int k_end = FFTBins - EdgeBinsToSkip;         // End of image frequencies
+
+	// Compute cost and gradients
+	for (i = k_start; i < k_end; i++) {
+		// Corrected FFT coefficients
+		float X_re = fftPtr[i].re;
+		float X_im = fftPtr[i].im;
+
+		// Accumulate image power
+		image_power += X_re * X_re + X_im * X_im;
+
+		// Derivatives of FFT coefficients with respect to phase
+		float dX_dphi_re = dfft_dphi[i].re;
+		float dX_dphi_im = dfft_dphi[i].im;
+
+		// Gradient with respect to phase
+		grad_phi += 2 * (dX_dphi_re * X_re + dX_dphi_im * X_im);
+
+		// Derivatives of FFT coefficients with respect to amplitude
+		float dX_dA_re = dfft_dA[i].re;
+		float dX_dA_im = dfft_dA[i].im;
+
+		// Gradient with respect to amplitude
+		grad_A += 2 * (dX_dA_re * X_re + dX_dA_im * X_im);
+	}
+
+	// Assign computed cost and gradients to output variables
+	*cost = image_power;
+	*gradient_phi = grad_phi;
+	*gradient_A = grad_A;
+}
+
 static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
 	int i, j;
@@ -468,10 +555,37 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	a = utility(iq_balancer, iq_balancer->corr);
 	b = utility(iq_balancer, iq_balancer->corr_plus);
 
+	mu = a.im - b.im;
+	if (fabs(mu) > MinDeltaMu)
+	{
+		mu = a.im / mu;
+		if (mu < -MaxMu)
+			mu = -MaxMu;
+		else if (mu > MaxMu)
+			mu = MaxMu;
+	}
+	else
+	{
+		mu = 0;
+	}
 
-	phase = iq_balancer->phase;// +PhaseStep * mu;
+	phase = iq_balancer->phase + PhaseStep * mu;
 
-	amplitude = iq_balancer->amplitude;// +AmplitudeStep * mu;
+	mu = a.re - b.re;
+	if (fabs(mu) > MinDeltaMu)
+	{
+		mu = a.re / mu;
+		if (mu < -MaxMu)
+			mu = -MaxMu;
+		else if (mu > MaxMu)
+			mu = MaxMu;
+	}
+	else
+	{
+		mu = 0;
+	}
+
+	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
@@ -492,75 +606,41 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	iq_balancer->amplitude = amplitude;
 }
 
-static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude) {
-	int i;
-	float image_power = 0.0f;
-	complex_t* RESTRICT fftPtr = __fft_mem;
+static void estimate_imbalance2(struct iq_balancer_t* iq_balancer, complex_t* iq, int length) {
+	float cost, gradient_phi, gradient_A;
 
-	// Allocate memory for local FFT buffer if needed
+	// Compute cost and gradients at current parameters
+	compute_cost_and_gradients(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude, &cost, &gradient_phi, &gradient_A);
 
+	// Define maximum allowed changes based on MaxMu
+	float max_delta_phase = MaxMu;
+	float max_delta_amplitude = MaxMu;
 
-	// Copy the first FFTBins samples to the FFT buffer
-	memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
+	// Compute parameter updates
+	float delta_phase = -iq_balancer->learning_rate * gradient_phi;
+	float delta_amplitude = -iq_balancer->learning_rate * gradient_A;
 
-	// Apply phase and amplitude corrections
-	for (i = 0; i < FFTBins; i++) {
-		float re = fftPtr[i].re;
-		float im = fftPtr[i].im;
+	// Clamp the parameter updates
+	if (delta_phase > max_delta_phase)
+		delta_phase = max_delta_phase;
+	else if (delta_phase < -max_delta_phase)
+		delta_phase = -max_delta_phase;
 
-		// Apply phase correction
-		fftPtr[i].re += phase * im;
-		fftPtr[i].im += phase * re;
+	if (delta_amplitude > max_delta_amplitude)
+		delta_amplitude = max_delta_amplitude;
+	else if (delta_amplitude < -max_delta_amplitude)
+		delta_amplitude = -max_delta_amplitude;
 
-		// Apply amplitude correction
-		fftPtr[i].re *= 1 + amplitude;
-		fftPtr[i].im *= 1 - amplitude;
-	}
+	// Update parameters
+	iq_balancer->phase += delta_phase;
+	iq_balancer->amplitude += delta_amplitude;
 
-	// Apply window function
-	window(fftPtr, FFTBins);
-
-	// Perform FFT
-	fft(fftPtr, FFTBins);
-
-	// Compute image power
-	int k_start = FFTBins / 2 + CenterBinsToSkip; // Start of image frequencies
-	int k_end = FFTBins - EdgeBinsToSkip;         // End of image frequencies
-
-	for (i = k_start; i < k_end; i++) {
-		float re = fftPtr[i].re;
-		float im = fftPtr[i].im;
-		image_power += re * re + im * im;
-	}
-	return image_power;
+	// Optionally, implement phase wrapping if necessary
+	iq_balancer->phase = fmod(iq_balancer->phase, 2 * MATH_PI);
 }
 
 
-static void apply_gradient_update(struct iq_balancer_t* iq_balancer, complex_t* iq, int length) {
-	float delta_phi = PhaseStep;        // Small increment for phase
-	float delta_A = AmplitudeStep;      // Small increment for amplitude
 
-	// Compute cost at current parameters
-	float J_current = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude);
-
-	// Compute cost with perturbed phase
-	float J_phi = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase + delta_phi, iq_balancer->amplitude);
-
-	// Compute cost with perturbed amplitude
-	float J_A = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude + delta_A);
-
-	// Approximate gradients
-	float gradient_phi = (J_phi - J_current) / delta_phi;
-	float gradient_A = (J_A - J_current) / delta_A;
-
-	// Update parameters using gradients
-	iq_balancer->phase -= iq_balancer->learning_rate * gradient_phi;
-	iq_balancer->amplitude -= iq_balancer->learning_rate * gradient_A;
-
-	// Optional: Limit the range of phase and amplitude
-	// iq_balancer->phase = fmax(fmin(iq_balancer->phase, MAX_PHASE), MIN_PHASE);
-	// iq_balancer->amplitude = fmax(fmin(iq_balancer->amplitude, MAX_AMPLITUDE), MIN_AMPLITUDE);
-}
 
 static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length)
 {
@@ -627,7 +707,7 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  
 			{
 				iq_balancer->skipped_buffers = 0;
 				estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
-				apply_gradient_update(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
+				estimate_imbalance2(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
 
 			}
 		}
