@@ -71,6 +71,9 @@ struct iq_balancer_t
 	double last_phase;
 	double phase_gradient;
 	double amplitude_gradient;
+	double integrated_phase_gradient;
+	double integrated_amplitude_gradient;
+	double momentum;  // Momentum factor for gradient integration
 	double learning_rate;  // Controls how fast we update based on the gradient
 	double amplitude;
 	double last_amplitude;
@@ -395,6 +398,8 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 
 	float invskip = 1.0f / EdgeBinsToSkip;
 	complex_t acc = { 0, 0 };
+	double im = 0.0;
+	double re = 0.0;
 	for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
 	{
 		int distance = abs(i - FFTBins / 2);
@@ -406,10 +411,12 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 				weight *= boost_window[abs(iq_balancer->optimal_bin - i)];
 			}
 			weight *= boost[j] / (boost[i] + EPSILON);
-			acc.re += ccorr[i].re * weight;
-			acc.im += ccorr[i].im * weight;
+			re += ccorr[i].re * weight;
+			im += ccorr[i].im * weight;
 		}
 	}
+	acc.re = re;
+	acc.im = im;
 	return acc;
 }
 
@@ -461,9 +468,9 @@ void compute_cost_and_gradients(struct iq_balancer_t* iq_balancer, complex_t* iq
 	fft(dfft_dA, FFTBins);
 
 	// Initialize cost and gradients
-	float image_power = 0.0f;
-	float grad_phi = 0.0f;
-	float grad_A = 0.0f;
+	double image_power = 0.0;
+	double grad_phi = 0.0f;
+	double grad_A = 0.0f;
 
 	int k_start = FFTBins / 2 + CenterBinsToSkip; // Start of image frequencies
 	int k_end = FFTBins - EdgeBinsToSkip;         // End of image frequencies
@@ -569,7 +576,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	phase = iq_balancer->phase + PhaseStep * mu;
+	phase = iq_balancer->phase; //+ PhaseStep * mu;
 
 	mu = a.re - b.re;
 	if (fabs(mu) > MinDeltaMu)
@@ -585,7 +592,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
+	amplitude = iq_balancer->amplitude;//+ AmplitudeStep * mu;
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
@@ -617,8 +624,12 @@ static void estimate_imbalance2(struct iq_balancer_t* iq_balancer, complex_t* iq
 	float max_delta_amplitude = MaxMu;
 
 	// Compute parameter updates
-	float delta_phase = -iq_balancer->learning_rate * gradient_phi;
-	float delta_amplitude = -iq_balancer->learning_rate * gradient_A;
+
+	iq_balancer->integrated_phase_gradient = iq_balancer->momentum * iq_balancer->integrated_phase_gradient + (1 - iq_balancer->momentum) * gradient_phi;
+	iq_balancer->integrated_amplitude_gradient = iq_balancer->momentum * iq_balancer->integrated_amplitude_gradient + (1 - iq_balancer->momentum) * gradient_A;
+	float delta_phase = -iq_balancer->integrated_phase_gradient;
+	float delta_amplitude = -iq_balancer->integrated_amplitude_gradient;
+
 
 	// Clamp the parameter updates
 	if (delta_phase > max_delta_phase)
@@ -760,6 +771,7 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 	instance->amplitude_gradient = 0;
 	instance->learning_rate = 0.1f;//0.0898f;  // delta t / bandwidth
 	instance->optimal_bin = FFTBins / 2;
+	instance->momentum = 0.9;  // Adjust this value as needed
 
 	instance->buffers_to_skip = BuffersToSkip;
 	instance->fft_integration = FFTIntegration;
