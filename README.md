@@ -2,7 +2,7 @@
 
 This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands. This version is modified to make it able to compile and run appropriately on MUSL linux, the latest versions of raspberry pi OS(with the latest libusb 1.0.27), and with as few warnings or errors as possible.
 
-##Please use the official version at https://github.com/airspy/airspyhf if you dont know c++. this version is not supported.
+## Please use the official version at https://github.com/airspy/airspyhf if you dont know c++. this version is not supported.
 
 
 It is also refactored for a performance boost.
