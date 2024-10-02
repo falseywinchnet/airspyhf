@@ -109,6 +109,7 @@ static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
 
 
+
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
 static complex_t twiddle_factors[FFTBins/2];
@@ -239,186 +240,6 @@ static void fft(complex_t* buffer, int length)
 
 
 
-
-static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
-{
-	int i;
-
-	
-		VECTORIZE_LOOP
-		for (i = 0; i < FFTBins; i++)
-		{
-			float re = iq[i].re;
-			float im = iq[i].im;
-
-			iq[i].re += phase * im;
-			iq[i].im += phase * re;
-
-			iq[i].re *= 1 + amplitude;
-			iq[i].im *= 1 - amplitude;
-		}
-}
-
-static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
-{
-	int i;
-	double sum = 0;
-
-	
-		VECTORIZE_LOOP
-		for (i = 0; i < FFTBins; i++)
-		{
-			float re = iq[i].re;
-			float im = iq[i].im;
-
-			iq[i].re += phase * im;
-			iq[i].im += phase * re;
-
-			iq[i].re *= 1 + amplitude;
-			iq[i].im *= 1 - amplitude;
-			sum += re * re + im * im;
-		}
-	return (float)sum;
-}
-
-
-static complex_t multiply_complex_complex(complex_t* RESTRICT a, const complex_t* RESTRICT b)
-{
-	complex_t result;
-	result.re = a->re * b->re - a->im * b->im;
-	result.im = a->im * b->re + a->re * b->im;
-	return result;
-}
-
-
-static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, complex_t* RESTRICT  ccorr, int length, int step)
-{
-	complex_t cc;
-	complex_t* RESTRICT fftPtr = __fft_mem;
-	float* RESTRICT boost = iq_balancer->boost;
-	float* RESTRICT boost_window = __boost_window;
-	int* RESTRICT power_flag = iq_balancer->power_flag;
-
-	int n, m = 0;
-	int i, j;
-	int count = 0;
-	float power = 0.0f;
-	float phase = iq_balancer->phase + step * PhaseStep;
-	float amplitude = iq_balancer->amplitude + step * AmplitudeStep;
-	int optimal_bin = iq_balancer->optimal_bin;
-	if (step == 0)
-	{
-		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
-		{
-			memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
-
-				power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
-
-				if (power > MinimumPower)
-				{
-					power_flag[m] = 1;
-					iq_balancer->integrated_total_power += power;
-				}
-				else
-				{
-					power_flag[m] = 0;
-				}
-			if (power_flag[m] == 1)
-			{
-				count++;
-				window(fftPtr, FFTBins);
-				fft(fftPtr, FFTBins);
-				for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
-				{
-					cc = multiply_complex_complex(fftPtr + i, fftPtr + j);
-					ccorr[i].re += cc.re;
-					ccorr[i].im += cc.im;
-
-					ccorr[j].re = ccorr[i].re;
-					ccorr[j].im = ccorr[i].im;
-				}
-
-
-				if (optimal_bin == FFTBins / 2) {
-					
-					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
-					{
-						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
-						boost[i] += power;
-						iq_balancer->integrated_image_power += power;
-					}
-				}
-				else {
-						for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
-						{
-							power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
-							boost[i] += power;
-							iq_balancer->integrated_image_power += power * boost_window[abs(FFTBins - i - optimal_bin)];
-						}
-				}
-				
-			}
-		}
-	}
-	else
-	{
-		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
-		{
-			memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
-			adjust_benchmark_no_sum(iq_balancer, fftPtr, phase, amplitude);
-			if (iq_balancer->power_flag[m] == 1)
-			{
-				count++;
-				window(fftPtr, FFTBins);
-				fft(fftPtr, FFTBins);
-				
-				for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
-				{
-					cc = multiply_complex_complex(fftPtr + i, fftPtr + j);
-					ccorr[i].re += cc.re;
-					ccorr[i].im += cc.im;
-
-					ccorr[j].re = ccorr[i].re;
-					ccorr[j].im = ccorr[i].im;
-				}
-			}
-		}
-	}
-	return count;
-}
-
-static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  ccorr)
-{
-	int i;
-	int j;
-	float* RESTRICT boost_window = __boost_window;
-	float* RESTRICT boost = iq_balancer->boost;
-
-	float invskip = 1.0f / EdgeBinsToSkip;
-	complex_t acc = { 0, 0 };
-	double im = 0.0;
-	double re = 0.0;
-	for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
-	{
-		int distance = abs(i - FFTBins / 2);
-		if (distance > CenterBinsToSkip)
-		{
-			float weight = (distance > EdgeBinsToSkip) ? 1.0f : (distance * invskip);
-			if (iq_balancer->optimal_bin != FFTBins / 2)
-			{
-				weight *= boost_window[abs(iq_balancer->optimal_bin - i)];
-			}
-			weight *= boost[j] / (boost[i] + EPSILON);
-			re += ccorr[i].re * weight;
-			im += ccorr[i].im * weight;
-		}
-	}
-	acc.re = re;
-	acc.im = im;
-	return acc;
-}
-
-
 static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude) {
 	int i;
 	double image_power = 0.0f;
@@ -462,217 +283,64 @@ static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t*
 	return image_power;
 }
 
-static float find_elliptical_compromise(float p1, float a1, float p2, float a2, float target_p, float target_a)
-{
-	// This is a simplified approach. A more sophisticated method might be needed for optimal results.
-	float t = 0.0f;
-	float best_t = 0.0f;
-	float min_distance = INFINITY;
-
-	for (int i = 0; i <= 100; i++) {
-		t = i / 100.0f;
-		float p = p1 + t * (p2 - p1);
-		float a = a1 + t * (a2 - a1);
-		float distance = sqrtf((p - target_p) * (p - target_p) + (a - target_a) * (a - target_a));
-		if (distance < min_distance) {
-			min_distance = distance;
-			best_t = t;
-		}
-	}
-
-	return best_t;
-}
-
-static void apply_correction(complex_t* sample, float phase, float amplitude)
-{
-	float re = sample->re;
-	float im = sample->im;
-
-	// Apply phase correction
-	sample->re += phase * im;
-	sample->im += phase * re;
-
-	// Apply amplitude correction
-	sample->re *= 1 + amplitude;
-	sample->im *= 1 - amplitude;
-}
 static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
-	int i, j;
-	float amplitude, phase, mu;
-	complex_t a, b;
-
-	if (iq_balancer->reset_flag)
-	{
-		iq_balancer->reset_flag = 0;
-		iq_balancer->no_of_avg = -BuffersToSkipOnReset;
-		iq_balancer->maximum_image_power = 0;
-	}
-
-	if (iq_balancer->no_of_avg < 0)
-	{
-		iq_balancer->no_of_avg++;
-		return;
-	}
-	else if (iq_balancer->no_of_avg == 0)
-	{
-		iq_balancer->integrated_image_power = 0;
-		iq_balancer->integrated_total_power = 0;
-		memset(iq_balancer->boost, 0, FFTBins * sizeof(float));
-		memset(iq_balancer->corr, 0, FFTBins * sizeof(complex_t));
-		memset(iq_balancer->corr_plus, 0, FFTBins * sizeof(complex_t));
-	}
-
-	iq_balancer->maximum_image_power *= MaxPowerDecay;
-
-	i = compute_corr(iq_balancer, iq, iq_balancer->corr, length, 0);
-	if (i == 0)
-		return;
-
-	iq_balancer->no_of_avg += i;
-	compute_corr(iq_balancer, iq, iq_balancer->corr_plus, length, 1);
-
-	if (iq_balancer->no_of_avg <= iq_balancer->correlation_integration * iq_balancer->fft_integration)
-		return;
-
-	iq_balancer->no_of_avg = 0;
-
-	if (iq_balancer->optimal_bin == FFTBins / 2)
-	{
-		if (iq_balancer->integrated_total_power < iq_balancer->maximum_image_power)
-			return;
-		iq_balancer->maximum_image_power = iq_balancer->integrated_total_power;
-	}
-	else
-	{
-		if (iq_balancer->integrated_image_power - iq_balancer->integrated_total_power * BoostWindowNorm < iq_balancer->maximum_image_power * PowerThreshold)
-			return;
-		iq_balancer->maximum_image_power = iq_balancer->integrated_image_power - iq_balancer->integrated_total_power * BoostWindowNorm;
-	}
-
-	a = utility(iq_balancer, iq_balancer->corr);
-	b = utility(iq_balancer, iq_balancer->corr_plus);
-
-	mu = a.im - b.im;
-	if (fabs(mu) > MinDeltaMu)
-	{
-		mu = a.im / mu;
-		if (mu < -MaxMu)
-			mu = -MaxMu;
-		else if (mu > MaxMu)
-			mu = MaxMu;
-	}
-	else
-	{
-		mu = 0;
-	}
-
-	phase = iq_balancer->phase + PhaseStep * mu;
-
-	mu = a.re - b.re;
-	if (fabs(mu) > MinDeltaMu)
-	{
-		mu = a.re / mu;
-		if (mu < -MaxMu)
-			mu = -MaxMu;
-		else if (mu > MaxMu)
-			mu = MaxMu;
-	}
-	else
-	{
-		mu = 0;
-	}
-
-	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
-
-	if (iq_balancer->no_of_raw < MaxLookback)
-		iq_balancer->no_of_raw++;
-	iq_balancer->raw_amplitudes[iq_balancer->raw_ptr] = amplitude;
-	iq_balancer->raw_phases[iq_balancer->raw_ptr] = phase;
-	i = iq_balancer->raw_ptr;
-	for (j = 0; j < iq_balancer->no_of_raw - 1; j++)
-	{
-		i = (i + MaxLookback - 1) & (MaxLookback - 1);
-		phase += iq_balancer->raw_phases[i];
-		amplitude += iq_balancer->raw_amplitudes[i];
-	}
-	phase /= iq_balancer->no_of_raw;
-	amplitude /= iq_balancer->no_of_raw;
-	iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
+	float amplitude, phase;
+	amplitude = iq_balancer->amplitude;
+	phase = iq_balancer->phase;
 
 
-		const int MAX_ITERATIONS = 10;  // Adjust as needed
-		const float CONVERGENCE_THRESHOLD = 1e-6;  // Adjust as needed
-		const float LEARNING_RATE_DECAY = 0.9;    // More aggressive decay
-		float prev_J = INFINITY;
 
-		for (int i = 0; i < MAX_ITERATIONS; i++) {
-			// Compute cost with current phase and amplitude
-			float J = compute_cost_function(iq_balancer, iq, length, phase, amplitude);
+	const int MAX_ITERATIONS = 10;  // Adjust as needed
+	const float CONVERGENCE_THRESHOLD = 1e-6;  // Adjust as needed
+	const float LEARNING_RATE_DECAY = 0.9;    // More aggressive decay
+	float prev_J = INFINITY;
 
-			// Compute costs with perturbed phase and amplitude
-			float J_phi = compute_cost_function(iq_balancer, iq, length, phase + PhaseStep, amplitude);
-			float J_A = compute_cost_function(iq_balancer, iq, length, phase, amplitude + AmplitudeStep);
+	for (int i = 0; i < MAX_ITERATIONS; i++) {
+		// Compute cost with current phase and amplitude
+		float J = compute_cost_function(iq_balancer, iq, length, phase, amplitude);
 
-			// Calculate gradients
-			float gradient_phi = (J_phi - J) / PhaseStep;
-			float gradient_A = (J_A - J) / AmplitudeStep;
+		// Compute costs with perturbed phase and amplitude
+		float J_phi = compute_cost_function(iq_balancer, iq, length, phase + PhaseStep, amplitude);
+		float J_A = compute_cost_function(iq_balancer, iq, length, phase, amplitude + AmplitudeStep);
 
-			// Estimate effectiveness of current learning rate
-			float gradient_magnitude = sqrt(gradient_phi * gradient_phi + gradient_A * gradient_A);
-			float proposed_step = iq_balancer->learning_rate * gradient_magnitude;
+		// Calculate gradients
+		float gradient_phi = (J_phi - J) / PhaseStep;
+		float gradient_A = (J_A - J) / AmplitudeStep;
 
-			// Adjust learning rate based on gradient magnitude and cost change
-			if (J < prev_J) {
-				if (proposed_step < 0.1 * (PhaseStep + AmplitudeStep) / 2) {
-					iq_balancer->learning_rate /= LEARNING_RATE_DECAY;  // Increase if step is too small
-				}
-				else if (proposed_step > 10 * (PhaseStep + AmplitudeStep) / 2) {
-					iq_balancer->learning_rate *= LEARNING_RATE_DECAY;  // Decrease if step is too large
-				}
+		// Estimate effectiveness of current learning rate
+		float gradient_magnitude = sqrt(gradient_phi * gradient_phi + gradient_A * gradient_A);
+		float proposed_step = iq_balancer->learning_rate * gradient_magnitude;
+
+		// Adjust learning rate based on gradient magnitude and cost change
+		if (J < prev_J) {
+			if (proposed_step < 0.1 * (PhaseStep + AmplitudeStep) / 2) {
+				iq_balancer->learning_rate /= LEARNING_RATE_DECAY;  // Increase if step is too small
 			}
-			else {
-				iq_balancer->learning_rate *= LEARNING_RATE_DECAY * LEARNING_RATE_DECAY;  // Decrease more if cost increased
-			}
-
-			// Update phase and amplitude
-			phase -= iq_balancer->learning_rate * gradient_phi;
-			amplitude -= iq_balancer->learning_rate * gradient_A;
-
-			prev_J = J;
-
-			// Early stopping if improvement is negligible
-			if (i > 0 && fabs(J - prev_J) < CONVERGENCE_THRESHOLD * fabs(prev_J)) {
-				break;
+			else if (proposed_step > 10 * (PhaseStep + AmplitudeStep) / 2) {
+				iq_balancer->learning_rate *= LEARNING_RATE_DECAY;  // Decrease if step is too large
 			}
 		}
+		else {
+			iq_balancer->learning_rate *= LEARNING_RATE_DECAY * LEARNING_RATE_DECAY;  // Decrease more if cost increased
+		}
 
-	// Apply the new phase and amplitude to a copy of the first element
-	complex_t test_sample = iq[0];
-	apply_correction(&test_sample, phase, amplitude);
+		// Update phase and amplitude
+		phase -= iq_balancer->learning_rate * gradient_phi;
+		amplitude -= iq_balancer->learning_rate * gradient_A;
+		phase = fmod(iq_balancer->phase, 2 * MATH_PI);
 
-	float test_phase = atan2f(test_sample.im, test_sample.re);
-	float test_amplitude = sqrtf(test_sample.re * test_sample.re + test_sample.im * test_sample.im);
+		prev_J = J;
 
-	// Check if the new correction brings us closer to the last frame's end
-	float current_phase_diff = fabsf(iq_balancer->last_frame_end_phase - atan2f(iq[0].im, iq[0].re));
-	float current_amplitude_diff = fabsf(iq_balancer->last_frame_end_amplitude - sqrtf(iq[0].re * iq[0].re + iq[0].im * iq[0].im));
-	float new_phase_diff = fabsf(iq_balancer->last_frame_end_phase - test_phase);
-	float new_amplitude_diff = fabsf(iq_balancer->last_frame_end_amplitude - test_amplitude);
+		// Early stopping if improvement is negligible
+		if (i > 0 && fabs(J - prev_J) < CONVERGENCE_THRESHOLD * fabs(prev_J)) {
+			break;
+		}
+	}
 
-	if (new_phase_diff <= current_phase_diff && new_amplitude_diff <= current_amplitude_diff) {
-		// New correction improves continuity, use it directly
 		iq_balancer->phase = phase;
 		iq_balancer->amplitude = amplitude;
-	}
-	else {
-		// Find a compromise using elliptical calculation
-		float t = find_elliptical_compromise(iq_balancer->phase, iq_balancer->amplitude,
-			phase, amplitude,
-			iq_balancer->last_frame_end_phase, iq_balancer->last_frame_end_amplitude);
-		iq_balancer->phase = iq_balancer->phase + t * (phase - iq_balancer->phase);
-		iq_balancer->amplitude = iq_balancer->amplitude + t * (amplitude - iq_balancer->amplitude);
-	}
+
 }
 
 
