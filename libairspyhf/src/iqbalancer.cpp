@@ -608,38 +608,104 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
 
 
-	const int MAX_ITERATIONS = 10;  // Adjust as needed
-	const float CONVERGENCE_THRESHOLD = 1e-6;  // Adjust as needed
-	float delta_phi = PhaseStep;
-	float delta_A = AmplitudeStep;
 
-	for (int i = 0; i < MAX_ITERATIONS; i++) {
-		// Compute cost with current phase and amplitude
-		float J = compute_cost_function(iq_balancer, iq, length, phase, amplitude);
+		// Store the previous correction factors
+		float prev_phase = iq_balancer->last_phase;
+		float prev_amplitude = iq_balancer->last_amplitude;
 
-		// Compute costs with perturbed phase and amplitude
-		float J_phi = compute_cost_function(iq_balancer, iq, length, phase + delta_phi, amplitude);
-		float J_A = compute_cost_function(iq_balancer, iq, length, phase, amplitude + delta_A);
+		// Current correction factors
+		float current_phase = iq_balancer->phase;
+		float current_amplitude = iq_balancer->amplitude;
 
-		// Calculate gradients
-		float gradient_phi = (J_phi - J) / delta_phi;
-		float gradient_A = (J_A - J) / delta_A;
+		// Our initial guess from the existing method
+		float guess_phase = phase;
+		float guess_amplitude = amplitude;
 
-		// Update phase and amplitude
-		float new_phase = phase - iq_balancer->learning_rate * gradient_phi;
-		float new_amplitude = amplitude - iq_balancer->learning_rate * gradient_A;
+		// Calculate the current cost
+		float prev_cost = compute_cost_function(iq_balancer, iq, length, prev_phase, prev_amplitude);
+		float current_cost = compute_cost_function(iq_balancer, iq, length, current_phase, current_amplitude);
+		float guess_cost = compute_cost_function(iq_balancer, iq, length, guess_phase, guess_amplitude);
 
-		// Check for convergence
-		if (fabs(new_phase - phase) < CONVERGENCE_THRESHOLD &&
-			fabs(new_amplitude - amplitude) < CONVERGENCE_THRESHOLD) {
-			break;
+		if (current_cost > prev_cost) {
+			float p = current_phase;
+			float a = current_amplitude;
+			current_phase = prev_phase;
+			current_amplitude = prev_amplitude;
+			prev_phase = p;
+			prev_amplitude = a;
 		}
+		if (guess_cost > prev_cost) {
+			float p = current_phase;
+			float a = current_amplitude;
+			current_phase = phase;
+			current_amplitude = amplitude;
+			prev_phase = p;
+			prev_amplitude = a;
+		}
+		for (int i = 0;i < 4;i++) {
+			// Define the circle radius based on the distance between current and previous points
+			float radius = sqrtf((current_phase - prev_phase) * (current_phase - prev_phase) +
+				(current_amplitude - prev_amplitude) * (current_amplitude - prev_amplitude));
 
-		phase = new_phase;
-		amplitude = new_amplitude;
-	}
-	// ... existing estimation code ...
+			// Define our candidate points
+			float candidates[4][2] = {
+				{current_phase + radius, current_amplitude},
+				{current_phase - radius, current_amplitude},
+				{current_phase, current_amplitude + radius},
+				{current_phase, current_amplitude - radius}
+			};
 
+			// Evaluate cost at each candidate point
+			float candidate_costs[4];
+			for (int i = 0; i < 4; i++) {
+				candidate_costs[i] = compute_cost_function(iq_balancer, iq, length, candidates[i][0], candidates[i][1]);
+			}
+
+			// Find the two best candidates
+			int best1 = 0, best2 = 1;
+			for (int i = 2; i < 4; i++) {
+				if (candidate_costs[i] < candidate_costs[best1]) {
+					best2 = best1;
+					best1 = i;
+				}
+				else if (candidate_costs[i] < candidate_costs[best2]) {
+					best2 = i;
+				}
+			}
+
+			// Calculate the vector to move along
+			float vector_phase = (candidates[best1][0] + candidates[best2][0]) / 2 - current_phase;
+			float vector_amplitude = (candidates[best1][1] + candidates[best2][1]) / 2 - current_amplitude;
+
+			// Normalize the vector
+			float vector_length = sqrtf(vector_phase * vector_phase + vector_amplitude * vector_amplitude);
+			vector_phase /= vector_length;
+			vector_amplitude /= vector_length;
+
+			// Determine how far to move along the vector
+			float cost_reduction = (current_cost - fminf(candidate_costs[best1], candidate_costs[best2])) / current_cost;
+			float move_distance = radius * (1 + cost_reduction);
+
+			// Calculate new correction factors
+			float new_phase = current_phase + vector_phase * move_distance;
+			float new_amplitude = current_amplitude + vector_amplitude * move_distance;
+
+			// Evaluate the cost at the new point
+			float new_cost = compute_cost_function(iq_balancer, iq, length, new_phase, new_amplitude);
+
+			// If the new point is better, update the correction factors
+			if (new_cost < current_cost) {
+				prev_phase = current_phase;
+				prev_amplitude = current_amplitude;
+				current_phase = new_phase;
+				current_amplitude = new_amplitude;
+			}
+		}
+	
+		phase = current_phase;
+		amplitude = current_amplitude;
+		
+		
 
 	// Apply the new phase and amplitude to a copy of the first element
 	complex_t test_sample = iq[0];
