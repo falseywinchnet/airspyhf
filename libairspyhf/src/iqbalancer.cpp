@@ -241,11 +241,13 @@ static void fft(complex_t* buffer, int length)
 		buffer[j] = t;
 	}
 }
-void compute_uniform_spline_coefficients(const float* y, int n, float h, float* a, float* b, float* c, float* d) {
+void compute_uniform_spline_coefficients(const float* y, float h, float* a, float* b, float* c, float* d) {
 	int i;
 	float inv_h = 1.0f / h;
 	float inv_h2 = inv_h * inv_h;
-	int m = n - 2; // Number of equations
+	constexpr int n = HISTORY_SIZE;
+
+	constexpr int m = n - 2; // Number of equations
 
 	float rhs[m];
 	for (i = 1; i <= m; i++) {
@@ -294,7 +296,7 @@ float evaluate_uniform_spline(float x, float h, const float* a, const float* b, 
 }
 void interpolate_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length) {
 	// Assume HISTORY_SIZE >= 4
-	int n = HISTORY_SIZE;
+	constexpr int n = HISTORY_SIZE;
 	float h = 1.0f; // Since time indices are 0, 1, 2, ..., n - 1
 
 	float phase_values[n];
@@ -311,8 +313,8 @@ void interpolate_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* R
 	float a_phase[n - 1], b_phase[n - 1], c_phase[n - 1], d_phase[n - 1];
 	float a_amp[n - 1], b_amp[n - 1], c_amp[n - 1], d_amp[n - 1];
 
-	compute_uniform_spline_coefficients(phase_values, n, h, a_phase, b_phase, c_phase, d_phase);
-	compute_uniform_spline_coefficients(amplitude_values, n, h, a_amp, b_amp, c_amp, d_amp);
+	compute_uniform_spline_coefficients(phase_values, h, a_phase, b_phase, c_phase, d_phase);
+	compute_uniform_spline_coefficients(amplitude_values, h, a_amp, b_amp, c_amp, d_amp);
 
 	// Apply corrections
 	float total_time = (n - 1) * h;
@@ -373,8 +375,8 @@ static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t*
 	float a_phase[n - 1], b_phase[n - 1], c_phase[n - 1], d_phase[n - 1];
 	float a_amp[n - 1], b_amp[n - 1], c_amp[n - 1], d_amp[n - 1];
 
-	compute_uniform_spline_coefficients(phase_values, n, h, a_phase, b_phase, c_phase, d_phase);
-	compute_uniform_spline_coefficients(amplitude_values, n, h, a_amp, b_amp, c_amp, d_amp);
+	compute_uniform_spline_coefficients(phase_values, h, a_phase, b_phase, c_phase, d_phase);
+	compute_uniform_spline_coefficients(amplitude_values, h, a_amp, b_amp, c_amp, d_amp);
 
 	// Apply spline-based corrections
 	float total_time = (n - 1) * h;
