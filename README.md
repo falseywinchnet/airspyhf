@@ -8,8 +8,8 @@ This repository contains host software (Linux/Windows) for Airspy HF+, a high pe
 It is also refactored for a performance boost.
 it has been changed to no longer perform any kind of tapering or buffer skipping internally, choosing instead to trust SDR software writers. This can result in a large initial DC bump, so the first few hundred MS after starting the radio or changing IQ frequency should be dropped or tapered appropriately. it also has some different approaches to quite a few things..
 
-1. different/changed iq balancing
-2. different window function
+1. different/changed iq balancing - more ft8 decodes observed, but largely the same.
+2. different window function- a little bit better tapering
 3. some other tweaks to taste
 
 http://www.airspy.com/airspy-hf-plus
