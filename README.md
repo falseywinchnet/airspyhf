@@ -75,6 +75,9 @@ spyserver depends on a handful of libraries as part of glibc which are not prope
 ## requirement to make it work
 "LD_PRELOAD=/usr/lib/libusb-1.0.so airspyhf_info/spyserver/etc" if your system has an old libusb it depends on, you'll have to manually bind to this on linux
 
+
+note that if you blindly followed the instructions above you have just installed the normal airspy library and not the one in this repo since i did not change the wget directive. 
+
 ## Principal authors:
 
 Ian Gilmour <ian@sdrsharp.com> and Youssef Touil <youssef@airspy.com> 
