@@ -67,6 +67,8 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 struct iq_balancer_t
 {
+	float last_frame_end_phase;
+	float last_frame_end_amplitude;
 	double phase;
 	double last_phase;
 	double phase_new;
@@ -105,8 +107,7 @@ struct iq_balancer_t
 
 static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
-static complex_t __fft_mem2[FFTBins];
-static complex_t __fft_mem3[FFTBins];
+
 
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
@@ -461,7 +462,47 @@ static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t*
 	return image_power;
 }
 
+float estimate_frame_phase(complex_t* iq, int length) {
+	float sum_phase = 0.0f;
+	for (int i = 0; i < length; i++) {
+		sum_phase += atan2f(iq[i].im, iq[i].re);
+	}
+	return sum_phase / length;
+}
+static float find_elliptical_compromise(float p1, float a1, float p2, float a2, float target_p, float target_a)
+{
+	// This is a simplified approach. A more sophisticated method might be needed for optimal results.
+	float t = 0.0f;
+	float best_t = 0.0f;
+	float min_distance = INFINITY;
 
+	for (int i = 0; i <= 100; i++) {
+		t = i / 100.0f;
+		float p = p1 + t * (p2 - p1);
+		float a = a1 + t * (a2 - a1);
+		float distance = sqrtf((p - target_p) * (p - target_p) + (a - target_a) * (a - target_a));
+		if (distance < min_distance) {
+			min_distance = distance;
+			best_t = t;
+		}
+	}
+
+	return best_t;
+}
+
+static void apply_correction(complex_t* sample, float phase, float amplitude)
+{
+	float re = sample->re;
+	float im = sample->im;
+
+	// Apply phase correction
+	sample->re += phase * im;
+	sample->im += phase * re;
+
+	// Apply amplitude correction
+	sample->re *= 1 + amplitude;
+	sample->im *= 1 - amplitude;
+}
 static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
 	int i, j;
@@ -597,11 +638,37 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		phase = new_phase;
 		amplitude = new_amplitude;
 	}
+	// ... existing estimation code ...
 
 
-	iq_balancer->phase = phase;
-	iq_balancer->amplitude = amplitude;
+	// Apply the new phase and amplitude to a copy of the first element
+	complex_t test_sample = iq[0];
+	apply_correction(&test_sample, phase, amplitude);
+
+	float test_phase = atan2f(test_sample.im, test_sample.re);
+	float test_amplitude = sqrtf(test_sample.re * test_sample.re + test_sample.im * test_sample.im);
+
+	// Check if the new correction brings us closer to the last frame's end
+	float current_phase_diff = fabsf(iq_balancer->last_frame_end_phase - atan2f(iq[0].im, iq[0].re));
+	float current_amplitude_diff = fabsf(iq_balancer->last_frame_end_amplitude - sqrtf(iq[0].re * iq[0].re + iq[0].im * iq[0].im));
+	float new_phase_diff = fabsf(iq_balancer->last_frame_end_phase - test_phase);
+	float new_amplitude_diff = fabsf(iq_balancer->last_frame_end_amplitude - test_amplitude);
+
+	if (new_phase_diff <= current_phase_diff && new_amplitude_diff <= current_amplitude_diff) {
+		// New correction improves continuity, use it directly
+		iq_balancer->phase = phase;
+		iq_balancer->amplitude = amplitude;
+	}
+	else {
+		// Find a compromise using elliptical calculation
+		float t = find_elliptical_compromise(iq_balancer->phase, iq_balancer->amplitude,
+			phase, amplitude,
+			iq_balancer->last_frame_end_phase, iq_balancer->last_frame_end_amplitude);
+		iq_balancer->phase = iq_balancer->phase + t * (phase - iq_balancer->phase);
+		iq_balancer->amplitude = iq_balancer->amplitude + t * (amplitude - iq_balancer->amplitude);
+	}
 }
+
 
 
 
@@ -677,7 +744,8 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  
 		}
 
 	adjust_phase_amplitude(iq_balancer, iq, length);
-
+	iq_balancer->last_frame_end_phase = atan2f(iq[length - 1].im, iq[length - 1].re);
+	iq_balancer->last_frame_end_amplitude = sqrtf(iq[length - 1].re * iq[length - 1].re + iq[length - 1].im * iq[length - 1].im);
 
 }
 
