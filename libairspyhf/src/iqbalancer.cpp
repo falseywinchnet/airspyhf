@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
+Contributions to this work were provided by OpenAI Codex and Claude Sonnet.
 
 
 
@@ -344,7 +344,106 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 }
 
 
+/* todo: integrate simple spline approach to achieve a better tapering of the adjustment than a simple averaging
 
+static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length)
+{
+    int i;
+    float frame_time = (float)(length - 1);
+
+    // Values at control points
+    float phase0 = iq_balancer->last_phase;
+    float phase1 = iq_balancer->phase;
+    float amplitude0 = iq_balancer->last_amplitude;
+    float amplitude1 = iq_balancer->amplitude;
+
+    // Derivatives at control points (assuming constant rate)
+    float phase_derivative = (phase1 - phase0) / frame_time;
+    float amplitude_derivative = (amplitude1 - amplitude0) / frame_time;
+
+    VECTORIZE_LOOP
+    for (i = 0; i < length; i++)
+    {
+        float t = (float)i / frame_time;
+
+        // Hermite basis functions
+        float h00 = 2 * t * t * t - 3 * t * t + 1;
+        float h10 = t * t * t - 2 * t * t + t;
+        float h01 = -2 * t * t * t + 3 * t * t;
+        float h11 = t * t * t - t * t;
+
+        // Interpolated phase and amplitude
+        float phase = h00 * phase0 + h10 * phase_derivative + h01 * phase1 + h11 * phase_derivative;
+        float amplitude = h00 * amplitude0 + h10 * amplitude_derivative + h01 * amplitude1 + h11 * amplitude_derivative;
+
+        // Apply corrections
+        float re = iq[i].re;
+        float im = iq[i].im;
+
+        // Phase correction
+        iq[i].re += phase * im;
+        iq[i].im += phase * re;
+
+        // Amplitude correction
+        iq[i].re *= 1 + amplitude;
+        iq[i].im *= 1 - amplitude;
+    }
+
+    // Update last values
+    iq_balancer->last_phase = iq_balancer->phase;
+    iq_balancer->last_amplitude = iq_balancer->amplitude;
+}
+
+
+static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase1, float amplitude1) {
+    int i;
+    double image_power = 0.0f;
+    complex_t* RESTRICT fftPtr = __fft_mem;
+
+    // Copy the first FFTBins samples to the FFT buffer
+    memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
+
+    float frame_time = (float)(length - 1);
+
+    // Values at control points
+    float phase0 = iq_balancer->last_phase;
+    float amplitude0 = iq_balancer->last_amplitude;
+
+    // Derivatives at control points
+    float phase_derivative = (phase1 - phase0) / frame_time;
+    float amplitude_derivative = (amplitude1 - amplitude0) / frame_time;
+
+    // Apply spline-based corrections
+    for (i = 0; i < FFTBins; i++) {
+        float t = (float)i / frame_time;
+
+        // Hermite basis functions
+        float h00 = 2 * t * t * t - 3 * t * t + 1;
+        float h10 = t * t * t - 2 * t * t + t;
+        float h01 = -2 * t * t * t + 3 * t * t;
+        float h11 = t * t * t - t * t;
+
+        // Interpolated phase and amplitude
+        float phase = h00 * phase0 + h10 * phase_derivative + h01 * phase1 + h11 * phase_derivative;
+        float amplitude = h00 * amplitude0 + h10 * amplitude_derivative + h01 * amplitude1 + h11 * amplitude_derivative;
+
+        float re = fftPtr[i].re;
+        float im = fftPtr[i].im;
+
+        // Apply corrections
+        fftPtr[i].re += phase * im;
+        fftPtr[i].im += phase * re;
+
+        fftPtr[i].re *= 1 + amplitude;
+        fftPtr[i].im *= 1 - amplitude;
+    }
+
+    // Proceed with FFT and compute image power as before
+    // ...
+
+    return image_power;
+}
+*/
 
 
 
