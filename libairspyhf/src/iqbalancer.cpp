@@ -566,34 +566,43 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	amplitude /= iq_balancer->no_of_raw;
 	iq_balancer->raw_ptr = (iq_balancer->raw_ptr + 1) & (MaxLookback - 1);
 
-	iq_balancer->phase_new = phase;
-	iq_balancer->amplitude_new = amplitude;
+
+	const int MAX_ITERATIONS = 10;  // Adjust as needed
+	const float CONVERGENCE_THRESHOLD = 1e-6;  // Adjust as needed
+	float delta_phi = PhaseStep;
+	float delta_A = AmplitudeStep;
+
+	for (int i = 0; i < MAX_ITERATIONS; i++) {
+		// Compute cost with current phase and amplitude
+		float J = compute_cost_function(iq_balancer, iq, length, phase, amplitude);
+
+		// Compute costs with perturbed phase and amplitude
+		float J_phi = compute_cost_function(iq_balancer, iq, length, phase + delta_phi, amplitude);
+		float J_A = compute_cost_function(iq_balancer, iq, length, phase, amplitude + delta_A);
+
+		// Calculate gradients
+		float gradient_phi = (J_phi - J) / delta_phi;
+		float gradient_A = (J_A - J) / delta_A;
+
+		// Update phase and amplitude
+		float new_phase = phase - iq_balancer->learning_rate * gradient_phi;
+		float new_amplitude = amplitude - iq_balancer->learning_rate * gradient_A;
+
+		// Check for convergence
+		if (fabs(new_phase - phase) < CONVERGENCE_THRESHOLD &&
+			fabs(new_amplitude - amplitude) < CONVERGENCE_THRESHOLD) {
+			break;
+		}
+
+		phase = new_phase;
+		amplitude = new_amplitude;
+	}
+
+
+	iq_balancer->phase = phase;
+	iq_balancer->amplitude = amplitude;
 }
 
-
-static void apply_gradient_update(struct iq_balancer_t* iq_balancer, complex_t* iq, int length) {
-	float delta_phi = PhaseStep;        // Small increment for phase
-	float delta_A = AmplitudeStep;      // Small increment for amplitude
-
-	// Compute cost at current parameters
-	float J_current = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude);
-
-	// Compute cost with perturbed phase
-	float J_phi = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase_new, iq_balancer->amplitude);
-
-	// Compute cost with perturbed amplitude
-	float J_A = compute_cost_function(iq_balancer, iq, length, iq_balancer->phase, iq_balancer->amplitude_new);
-
-	// Approximate gradients
-	float gradient_phi = (J_phi - J_current) / delta_phi;
-	float gradient_A = (J_A - J_current) / delta_A;
-
-	// Update parameters using gradients
-	iq_balancer->phase -= iq_balancer->learning_rate * gradient_phi;
-	iq_balancer->amplitude -= iq_balancer->learning_rate * gradient_A;
-
-	
-}
 
 
 
@@ -663,7 +672,6 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  
 			{
 				iq_balancer->skipped_buffers = 0;
 				estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
-				apply_gradient_update(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
 
 			}
 		}
