@@ -346,7 +346,7 @@ static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t*
 	complex_t* RESTRICT fftPtr = __fft_mem;
 
 	// Copy the first FFTBins samples to the FFT buffer
-	memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
+	memcpy(fftPtr, iq, FFTBins * sizeof(complex_t));
 
 	// Prepare data for interpolation
 	// We need at least 4 points for cubic spline interpolation
