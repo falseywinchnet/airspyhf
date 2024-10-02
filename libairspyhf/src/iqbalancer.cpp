@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex and Claude Sonnet.
+Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
 
 
 
@@ -63,7 +63,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define BUFFER_SIZE 4096
 #define TRIPLE_BUFFER_SIZE (BUFFER_SIZE * 3)
 #define MAX_EXTREMA BUFFER_SIZE+2  // Adjust as needed
-
+#define HISTORY_SIZE 5
 
 struct iq_balancer_t
 {
@@ -89,7 +89,9 @@ struct iq_balancer_t
 	int fft_integration;
 	int fft_overlap;
 	int correlation_integration;
-
+	float phase_history[HISTORY_SIZE];
+	float amplitude_history[HISTORY_SIZE];
+	int history_index = 0;
 	int no_of_avg;
 	int no_of_raw;
 	int raw_ptr;
@@ -113,6 +115,8 @@ static complex_t __fft_mem[FFTBins];
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
 static complex_t twiddle_factors[FFTBins/2];
+#define HISTORY_SIZE 5  // Number of historical points to keep
+
 
 
 static void __init_library()
@@ -237,32 +241,163 @@ static void fft(complex_t* buffer, int length)
 		buffer[j] = t;
 	}
 }
+void compute_uniform_spline_coefficients(const float* y, int n, float h, float* a, float* b, float* c, float* d) {
+	int i;
+	float inv_h = 1.0f / h;
+	float inv_h2 = inv_h * inv_h;
+	int m = n - 2; // Number of equations
+
+	float rhs[m];
+	for (i = 1; i <= m; i++) {
+		rhs[i - 1] = 6.0f * (y[i + 1] - 2.0f * y[i] + y[i - 1]) * inv_h2;
+	}
+
+	// Forward elimination
+	float c_prime[m];
+	float rhs_prime[m];
+	float m_diag = 4.0f;
+
+	c_prime[0] = 1.0f / m_diag;
+	rhs_prime[0] = rhs[0] / m_diag;
+
+	for (i = 1; i < m; i++) {
+		m_diag = 4.0f - c_prime[i - 1];
+		c_prime[i] = 1.0f / m_diag;
+		rhs_prime[i] = (rhs[i] - rhs_prime[i - 1]) / m_diag;
+	}
+
+	// Back substitution
+	float M[n]; // Second derivatives
+	M[0] = M[n - 1] = 0.0f; // Natural spline boundary conditions
+
+	M[n - 2] = rhs_prime[m - 1];
+
+	for (i = m - 2; i >= 0; i--) {
+		M[i + 1] = rhs_prime[i] - c_prime[i] * M[i + 2];
+	}
+
+	// Compute spline coefficients
+	for (i = 0; i < n - 1; i++) {
+		a[i] = y[i];
+		b[i] = (y[i + 1] - y[i]) * inv_h - h * (2.0f * M[i] + M[i + 1]) / 6.0f;
+		c[i] = M[i] / 2.0f;
+		d[i] = (M[i + 1] - M[i]) / (6.0f * h);
+	}
+}
+float evaluate_uniform_spline(float x, float h, const float* a, const float* b, const float* c, const float* d, int n) {
+	int seg = (int)(x / h);
+	if (seg >= n - 1) seg = n - 2; // Clamp to last segment
+
+	float dx = x - seg * h;
+
+	return a[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx;
+}
+void interpolate_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length) {
+	// Assume HISTORY_SIZE >= 4
+	int n = HISTORY_SIZE;
+	float h = 1.0f; // Since time indices are 0, 1, 2, ..., n - 1
+
+	float phase_values[n];
+	float amplitude_values[n];
+
+	// Extract phase and amplitude history
+	for (int i = 0; i < n; i++) {
+		int index = (iq_balancer->history_index + i) % n;
+		phase_values[i] = iq_balancer->phase_history[index];
+		amplitude_values[i] = iq_balancer->amplitude_history[index];
+	}
+
+	// Compute spline coefficients
+	float a_phase[n - 1], b_phase[n - 1], c_phase[n - 1], d_phase[n - 1];
+	float a_amp[n - 1], b_amp[n - 1], c_amp[n - 1], d_amp[n - 1];
+
+	compute_uniform_spline_coefficients(phase_values, n, h, a_phase, b_phase, c_phase, d_phase);
+	compute_uniform_spline_coefficients(amplitude_values, n, h, a_amp, b_amp, c_amp, d_amp);
+
+	// Apply corrections
+	float total_time = (n - 1) * h;
+	float time_per_sample = total_time / (length - 1);
+
+	for (int i = 0; i < length; i++) {
+		float x = i * time_per_sample;
+
+		float phase = evaluate_uniform_spline(x, h, a_phase, b_phase, c_phase, d_phase, n);
+		float amplitude = evaluate_uniform_spline(x, h, a_amp, b_amp, c_amp, d_amp, n);
+
+		// Apply corrections
+		float re = iq[i].re;
+		float im = iq[i].im;
+
+		iq[i].re += phase * im;
+		iq[i].im += phase * re;
+
+		iq[i].re *= 1.0f + amplitude;
+		iq[i].im *= 1.0f - amplitude;
+	}
+}
 
 
 
-static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase, float amplitude) {
+static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase1, float amplitude1) {
 	int i;
 	double image_power = 0.0f;
 	complex_t* RESTRICT fftPtr = __fft_mem;
 
-	// Allocate memory for local FFT buffer if needed
-
-
 	// Copy the first FFTBins samples to the FFT buffer
 	memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
 
-	// Apply phase and amplitude corrections
+	// Prepare data for interpolation
+	// We need at least 4 points for cubic spline interpolation
+	int n = HISTORY_SIZE;
+	if (n < 4) {
+		// Fall back to linear interpolation if not enough data points
+		n = 2;
+	}
+	float h = 1.0f; // Uniform spacing between points
+
+	float phase_values[n];
+	float amplitude_values[n];
+
+	// Build the phase and amplitude history
+	// The last point is the current estimate (phase1, amplitude1)
+	for (int j = 0; j < n - 1; j++) {
+		int index = (iq_balancer->history_index + j) % HISTORY_SIZE;
+		phase_values[j] = iq_balancer->phase_history[index];
+		amplitude_values[j] = iq_balancer->amplitude_history[index];
+	}
+	// Add the current estimates as the last point
+	phase_values[n - 1] = phase1;
+	amplitude_values[n - 1] = amplitude1;
+
+	// Compute spline coefficients
+	float a_phase[n - 1], b_phase[n - 1], c_phase[n - 1], d_phase[n - 1];
+	float a_amp[n - 1], b_amp[n - 1], c_amp[n - 1], d_amp[n - 1];
+
+	compute_uniform_spline_coefficients(phase_values, n, h, a_phase, b_phase, c_phase, d_phase);
+	compute_uniform_spline_coefficients(amplitude_values, n, h, a_amp, b_amp, c_amp, d_amp);
+
+	// Apply spline-based corrections
+	float total_time = (n - 1) * h;
+	float time_per_sample = total_time / (FFTBins - 1);
+
 	for (i = 0; i < FFTBins; i++) {
+		float x = i * time_per_sample;
+
+		// Evaluate spline to get interpolated phase and amplitude
+		float phase = evaluate_uniform_spline(x, h, a_phase, b_phase, c_phase, d_phase, n);
+		float amplitude = evaluate_uniform_spline(x, h, a_amp, b_amp, c_amp, d_amp, n);
+
+		// Apply corrections
 		float re = fftPtr[i].re;
 		float im = fftPtr[i].im;
 
-		// Apply phase correction
+		// Phase correction
 		fftPtr[i].re += phase * im;
 		fftPtr[i].im += phase * re;
 
-		// Apply amplitude correction
-		fftPtr[i].re *= 1 + amplitude;
-		fftPtr[i].im *= 1 - amplitude;
+		// Amplitude correction
+		fftPtr[i].re *= 1.0f + amplitude;
+		fftPtr[i].im *= 1.0f - amplitude;
 	}
 
 	// Apply window function
@@ -338,136 +473,57 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		}
 	}
 
-		iq_balancer->phase = phase;
-		iq_balancer->amplitude = amplitude;
+	iq_balancer->phase = phase;
+	iq_balancer->amplitude = amplitude;
 
 }
-
-
-/* todo: integrate simple spline approach to achieve a better tapering of the adjustment than a simple averaging
-
-static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length)
-{
-    int i;
-    float frame_time = (float)(length - 1);
-
-    // Values at control points
-    float phase0 = iq_balancer->last_phase;
-    float phase1 = iq_balancer->phase;
-    float amplitude0 = iq_balancer->last_amplitude;
-    float amplitude1 = iq_balancer->amplitude;
-
-    // Derivatives at control points (assuming constant rate)
-    float phase_derivative = (phase1 - phase0) / frame_time;
-    float amplitude_derivative = (amplitude1 - amplitude0) / frame_time;
-
-    VECTORIZE_LOOP
-    for (i = 0; i < length; i++)
-    {
-        float t = (float)i / frame_time;
-
-        // Hermite basis functions
-        float h00 = 2 * t * t * t - 3 * t * t + 1;
-        float h10 = t * t * t - 2 * t * t + t;
-        float h01 = -2 * t * t * t + 3 * t * t;
-        float h11 = t * t * t - t * t;
-
-        // Interpolated phase and amplitude
-        float phase = h00 * phase0 + h10 * phase_derivative + h01 * phase1 + h11 * phase_derivative;
-        float amplitude = h00 * amplitude0 + h10 * amplitude_derivative + h01 * amplitude1 + h11 * amplitude_derivative;
-
-        // Apply corrections
-        float re = iq[i].re;
-        float im = iq[i].im;
-
-        // Phase correction
-        iq[i].re += phase * im;
-        iq[i].im += phase * re;
-
-        // Amplitude correction
-        iq[i].re *= 1 + amplitude;
-        iq[i].im *= 1 - amplitude;
-    }
-
-    // Update last values
-    iq_balancer->last_phase = iq_balancer->phase;
-    iq_balancer->last_amplitude = iq_balancer->amplitude;
-}
-
-
-static float compute_cost_function(struct iq_balancer_t* iq_balancer, complex_t* iq, int length, float phase1, float amplitude1) {
-    int i;
-    double image_power = 0.0f;
-    complex_t* RESTRICT fftPtr = __fft_mem;
-
-    // Copy the first FFTBins samples to the FFT buffer
-    memcpy(fftPtr, iq + length, FFTBins * sizeof(complex_t));
-
-    float frame_time = (float)(length - 1);
-
-    // Values at control points
-    float phase0 = iq_balancer->last_phase;
-    float amplitude0 = iq_balancer->last_amplitude;
-
-    // Derivatives at control points
-    float phase_derivative = (phase1 - phase0) / frame_time;
-    float amplitude_derivative = (amplitude1 - amplitude0) / frame_time;
-
-    // Apply spline-based corrections
-    for (i = 0; i < FFTBins; i++) {
-        float t = (float)i / frame_time;
-
-        // Hermite basis functions
-        float h00 = 2 * t * t * t - 3 * t * t + 1;
-        float h10 = t * t * t - 2 * t * t + t;
-        float h01 = -2 * t * t * t + 3 * t * t;
-        float h11 = t * t * t - t * t;
-
-        // Interpolated phase and amplitude
-        float phase = h00 * phase0 + h10 * phase_derivative + h01 * phase1 + h11 * phase_derivative;
-        float amplitude = h00 * amplitude0 + h10 * amplitude_derivative + h01 * amplitude1 + h11 * amplitude_derivative;
-
-        float re = fftPtr[i].re;
-        float im = fftPtr[i].im;
-
-        // Apply corrections
-        fftPtr[i].re += phase * im;
-        fftPtr[i].im += phase * re;
-
-        fftPtr[i].re *= 1 + amplitude;
-        fftPtr[i].im *= 1 - amplitude;
-    }
-
-    // Proceed with FFT and compute image power as before
-    // ...
-
-    return image_power;
-}
-*/
 
 
 
 static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length)
 {
 	int i;
-	float scale = 1.0f / (length - 1);
+	float frame_time = (float)(length - 1);
 
-		VECTORIZE_LOOP
+	// Values at control points
+	float phase0 = iq_balancer->last_phase;
+	float phase1 = iq_balancer->phase;
+	float amplitude0 = iq_balancer->last_amplitude;
+	float amplitude1 = iq_balancer->amplitude;
+
+	// Derivatives at control points (assuming constant rate)
+	float phase_derivative = (phase1 - phase0) / frame_time;
+	float amplitude_derivative = (amplitude1 - amplitude0) / frame_time;
+
+	VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
-			float phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
-			float amplitude = (i * iq_balancer->last_amplitude + (length - 1 - i) * iq_balancer->amplitude) * scale;
+			float t = (float)i / frame_time;
 
+			// Hermite basis functions
+			float h00 = 2 * t * t * t - 3 * t * t + 1;
+			float h10 = t * t * t - 2 * t * t + t;
+			float h01 = -2 * t * t * t + 3 * t * t;
+			float h11 = t * t * t - t * t;
+
+			// Interpolated phase and amplitude
+			float phase = h00 * phase0 + h10 * phase_derivative + h01 * phase1 + h11 * phase_derivative;
+			float amplitude = h00 * amplitude0 + h10 * amplitude_derivative + h01 * amplitude1 + h11 * amplitude_derivative;
+
+			// Apply corrections
 			float re = iq[i].re;
 			float im = iq[i].im;
 
+			// Phase correction
 			iq[i].re += phase * im;
 			iq[i].im += phase * re;
 
+			// Amplitude correction
 			iq[i].re *= 1 + amplitude;
 			iq[i].im *= 1 - amplitude;
 		}
 
+	// Update last values
 	iq_balancer->last_phase = iq_balancer->phase;
 	iq_balancer->last_amplitude = iq_balancer->amplitude;
 }
@@ -517,9 +573,11 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  
 		}
 
 	adjust_phase_amplitude(iq_balancer, iq, length);
-	iq_balancer->last_frame_end_phase = atan2f(iq[length - 1].im, iq[length - 1].re);
-	iq_balancer->last_frame_end_amplitude = sqrtf(iq[length - 1].re * iq[length - 1].re + iq[length - 1].im * iq[length - 1].im);
+	iq_balancer->phase_history[iq_balancer->history_index] = iq_balancer->phase;
+	iq_balancer->amplitude_history[iq_balancer->history_index] = iq_balancer->amplitude;
 
+	// Increment and wrap the history index
+	iq_balancer->history_index = (iq_balancer->history_index + 1) % HISTORY_SIZE;
 }
 
 void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, float w)
