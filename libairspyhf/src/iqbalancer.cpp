@@ -80,7 +80,7 @@ struct iq_balancer_t
 	double qavg;
 	double integrated_total_power;
 	double integrated_image_power;
-	float maximum_image_power;
+	double maximum_image_power;
 	float raw_phases[MaxLookback];
 	float raw_amplitudes[MaxLookback];
 	int skipped_buffers;
@@ -110,7 +110,9 @@ struct iq_balancer_t
 static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
 
-
+float dfloat(double value) {
+	return static_cast<float>(value);
+}
 
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
@@ -143,10 +145,10 @@ static void __init_library()
 
 
 	//Albrecht 10 terms 
-	VECTORIZE_LOOP
+	
 	for (i = 0; i <= length; i++)
 	{
-		__fft_window[i] = (float)(
+		__fft_window[i] = (dfloat)(
 			+0.2260721603916653632706
 			- 0.3865459981017629121952 * cos(2.0 * MATH_PI * i / length)
 			+ 0.2402581984804387251180 * cos(4.0 * MATH_PI * i / length)
@@ -158,13 +160,13 @@ static void __init_library()
 			+ 0.000001071744648495088830343 * cos(16.0 * MATH_PI * i / length)
 			- 0.000000002416881143872775668631 * cos(18.0 * MATH_PI * i / length)
 			);
-		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
+		__boost_window[i] = (dfloat)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
-	VECTORIZE_LOOP
+	
 	for (int i = 0; i < FFTBins / 2; i++) {
-		float angle = -2.0f * MATH_PI * i / FFTBins;
-		twiddle_factors[i].re = cosf(angle);
-		twiddle_factors[i].im = sinf(angle);
+		double angle = -2.0 * MATH_PI * i / FFTBins;
+		twiddle_factors[i].re = dfloat(cos(angle));
+		twiddle_factors[i].im = dfloat(sin(angle));
 	}
 
 	__lib_initialized = 1;
@@ -241,100 +243,30 @@ static void fft(complex_t* buffer, int length)
 		buffer[j] = t;
 	}
 }
-void compute_uniform_spline_coefficients(const float* y, float h, float* a, float* b, float* c, float* d) {
+
+
+static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
+{
 	int i;
-	float inv_h = 1.0f / h;
-	float inv_h2 = inv_h * inv_h;
-	const int n = HISTORY_SIZE;
-	const int m = n - 2; // Number of equations
+	float scale = 1.0f / (length - 1);
 
-	float rhs[m];
-	for (i = 1; i <= m; i++) {
-		rhs[i - 1] = 6.0f * (y[i + 1] - 2.0f * y[i] + y[i - 1]) * inv_h2;
-	}
+	for (i = 0; i < length; i++)
+	{
+		double phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
+		double amplitude = (i * iq_balancer->last_amplitude + (length - 1 - i) * iq_balancer->amplitude) * scale;
 
-	// Forward elimination
-	float c_prime[m];
-	float rhs_prime[m];
-	float m_diag = 4.0f;
-
-	c_prime[0] = 1.0f / m_diag;
-	rhs_prime[0] = rhs[0] / m_diag;
-
-	for (i = 1; i < m; i++) {
-		m_diag = 4.0f - c_prime[i - 1];
-		c_prime[i] = 1.0f / m_diag;
-		rhs_prime[i] = (rhs[i] - rhs_prime[i - 1]) / m_diag;
-	}
-
-	// Back substitution
-	float M[n]; // Second derivatives
-	M[0] = M[n - 1] = 0.0f; // Natural spline boundary conditions
-
-	M[n - 2] = rhs_prime[m - 1];
-
-	for (i = m - 2; i >= 0; i--) {
-		M[i + 1] = rhs_prime[i] - c_prime[i] * M[i + 2];
-	}
-
-	// Compute spline coefficients
-	for (i = 0; i < n - 1; i++) {
-		a[i] = y[i];
-		b[i] = (y[i + 1] - y[i]) * inv_h - h * (2.0f * M[i] + M[i + 1]) / 6.0f;
-		c[i] = M[i] / 2.0f;
-		d[i] = (M[i + 1] - M[i]) / (6.0f * h);
-	}
-}
-float evaluate_uniform_spline(float x, float h, const float* a, const float* b, const float* c, const float* d, int n) {
-	int seg = (int)(x / h);
-	if (seg >= n - 1) seg = n - 2; // Clamp to last segment
-
-	float dx = x - seg * h;
-
-	return a[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx;
-}
-void interpolate_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length) {
-	// Assume HISTORY_SIZE >= 4
-	const int n = HISTORY_SIZE;
-	float h = 1.0f; // Since time indices are 0, 1, 2, ..., n - 1
-
-	float phase_values[n];
-	float amplitude_values[n];
-
-	// Extract phase and amplitude history
-	for (int i = 0; i < n; i++) {
-		int index = (iq_balancer->history_index + i) % n;
-		phase_values[i] = iq_balancer->phase_history[index];
-		amplitude_values[i] = iq_balancer->amplitude_history[index];
-	}
-
-	// Compute spline coefficients
-	float a_phase[n - 1], b_phase[n - 1], c_phase[n - 1], d_phase[n - 1];
-	float a_amp[n - 1], b_amp[n - 1], c_amp[n - 1], d_amp[n - 1];
-
-	compute_uniform_spline_coefficients(phase_values, h, a_phase, b_phase, c_phase, d_phase);
-	compute_uniform_spline_coefficients(amplitude_values, h, a_amp, b_amp, c_amp, d_amp);
-
-	// Apply corrections
-	float total_time = (n - 1) * h;
-	float time_per_sample = total_time / (length - 1);
-
-	for (int i = 0; i < length; i++) {
-		float x = i * time_per_sample;
-
-		float phase = evaluate_uniform_spline(x, h, a_phase, b_phase, c_phase, d_phase, n);
-		float amplitude = evaluate_uniform_spline(x, h, a_amp, b_amp, c_amp, d_amp, n);
-
-		// Apply corrections
 		float re = iq[i].re;
 		float im = iq[i].im;
 
-		iq[i].re += phase * im;
-		iq[i].im += phase * re;
+		iq[i].re += dfloat(phase * im);
+		iq[i].im += dfloat(phase * re);
 
-		iq[i].re *= 1.0f + amplitude;
-		iq[i].im *= 1.0f - amplitude;
+		iq[i].re = dfloat(iq[i].re *( 1 + amplitude));
+		iq[i].im = dfloat(iq[i].im * (1 - amplitude));
 	}
+
+	iq_balancer->last_phase = iq_balancer->phase;
+	iq_balancer->last_amplitude = iq_balancer->amplitude;
 }
 
 
@@ -377,7 +309,7 @@ static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, comp
 			iq[i].im *= 1 - amplitude;
 			sum += re * re + im * im;
 		}
-	return (float)sum;
+	return (dfloat)(sum);
 }
 
 
@@ -402,8 +334,8 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 	int i, j;
 	int count = 0;
 	float power = 0.0f;
-	float phase = iq_balancer->phase + step * PhaseStep;
-	float amplitude = iq_balancer->amplitude + step * AmplitudeStep;
+	float phase = dfloat(iq_balancer->phase + step * PhaseStep);
+	float amplitude = dfloat(iq_balancer->amplitude + step * AmplitudeStep);
 	int optimal_bin = iq_balancer->optimal_bin;
 	if (step == 0)
 	{
@@ -587,7 +519,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	phase = iq_balancer->phase + PhaseStep * mu;
+	phase = dfloat(iq_balancer->phase + PhaseStep * mu);
 
 	mu = a.re - b.re;
 	if (fabs(mu) > MinDeltaMu)
@@ -603,7 +535,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	amplitude = iq_balancer->amplitude + AmplitudeStep * mu;
+	amplitude = dfloat(iq_balancer->amplitude + AmplitudeStep * mu);
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
@@ -638,8 +570,8 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 	{
 		iavg = (1 - alpha) * iavg + alpha * iq[i].re;
 		qavg = (1 - alpha) * qavg + alpha * iq[i].im;
-		iq[i].re -= iavg;
-		iq[i].im -= qavg;
+		iq[i].re -= dfloat(iavg);
+		iq[i].im -= dfloat(qavg);
 	}
 	iq_balancer->iavg = iavg;
 	iq_balancer->qavg = qavg;
@@ -670,12 +602,7 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  
 			}
 		}
 
-	interpolate_phase_amplitude(iq_balancer, iq, length);
-	iq_balancer->phase_history[iq_balancer->history_index] = iq_balancer->phase;
-	iq_balancer->amplitude_history[iq_balancer->history_index] = iq_balancer->amplitude;
-
-	// Increment and wrap the history index
-	iq_balancer->history_index = (iq_balancer->history_index + 1) % HISTORY_SIZE;
+	adjust_phase_amplitude(iq_balancer, iq, length);
 }
 
 void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, float w)
@@ -689,7 +616,7 @@ void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, fl
 		w = 0.5f;
 	}
 
-	iq_balancer->optimal_bin = (int)floor(FFTBins * (0.5 + w));
+	iq_balancer->optimal_bin = (int)floor(FFTBins * (0.5f + w));
 	iq_balancer->reset_flag = 1;
 }
 
@@ -717,7 +644,6 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 	memset(instance, 0, sizeof(struct iq_balancer_t));
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
-	instance->learning_rate = 0.1f;//0.0898f;  // delta t / bandwidth
 	instance->optimal_bin = FFTBins / 2;
 
 	instance->buffers_to_skip = BuffersToSkip;
