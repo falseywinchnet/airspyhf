@@ -67,6 +67,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 struct iq_balancer_t
 {
+	float phase_momentum = 0.000000001;
+	float amplitude_momentum = 0.00000001;
+	float decay_a = 0.6321205588285576784044762298385391325541888689682321654921631983;
+	float decay_b = 0.3678794411714423215955237701614608674458111310317678345078368016;
 	float last_frame_end_phase;
 	float last_frame_end_amplitude;
 	double phase;
@@ -451,7 +455,7 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
 	int i, j;
-	float amplitude, phase, mu;
+	float amplitude, phase, mu, update;
 	complex_t a, b;
 
 	if (iq_balancer->reset_flag)
@@ -506,9 +510,12 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	b = utility(iq_balancer, iq_balancer->corr_plus);
 
 	mu = a.im - b.im;
+	update = (iq_balancer->decay_a * iq_balancer->phase_momentum) + (iq_balancer->decay_b * a.im);
+	iq_balancer->phase_momentum = (iq_balancer->decay_a * iq_balancer->phase_momentum) + (update * iq_balancer->decay_b);
+
 	if (fabs(mu) > MinDeltaMu)
 	{
-		mu = a.im / mu;
+		mu = update / mu;
 		if (mu < -MaxMu)
 			mu = -MaxMu;
 		else if (mu > MaxMu)
@@ -522,9 +529,12 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	phase = dfloat(iq_balancer->phase + PhaseStep * mu);
 
 	mu = a.re - b.re;
+	update = (iq_balancer->decay_a * iq_balancer->amplitude_momentum) + (iq_balancer->decay_b * a.re);
+	iq_balancer->amplitude_momentum = (iq_balancer->decay_a * iq_balancer->amplitude_momentum) + (update * iq_balancer->decay_b);
+
 	if (fabs(mu) > MinDeltaMu)
 	{
-		mu = a.re / mu;
+		mu = update / mu;
 		if (mu < -MaxMu)
 			mu = -MaxMu;
 		else if (mu > MaxMu)
