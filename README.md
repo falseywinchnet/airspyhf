@@ -27,7 +27,8 @@ http://www.airspy.com/airspy-hf-plus
 * Navigate to **src** and Launch **airspyhf.sln** with VisualStudio 2013 or later
 * In Visual Studio, choose **Release**, **x86** or **x64** then **Build Solution**
 *if visual studio cannot find the libraries, manually edit the c++ and linker includes to use the appropriate /include/ directory
-*for libusb, use the "x86/dll" folder if compiling with clang, and copy the dll into the directory with your airspyhf.dll
+*for libusb, use the "{arch}/dll" folder if compiling with clang, and copy the dll into the directory with your airspyhf.dll-
+*the version of libusb this compiles against is not the same as the one which ships with sdrsharp
 
 ## How to build the host software on Linux:
 
