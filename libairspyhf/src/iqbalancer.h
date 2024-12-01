@@ -31,9 +31,12 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define BinsToOptimize (FFTBins/25)
 #define EdgeBinsToSkip (FFTBins/22)
 #define CenterBinsToSkip 2
-#define MaxLookback 4
-#define PhaseStep 1e-2f
-#define AmplitudeStep 1e-2f
+#define MaxLookback 4 
+#define PhaseGradStep 0.414213562373f  //tan(pi/2*MaxLookBack)  # Maximum rotation before correlation loss across 4 samples (MaxLookback)
+
+#define AmplitudeGradStep 0.9636633660515027f//(1 - tan(pi/8 - arctan(phase_step))) / (1 + tan(pi/8 - arctan(phase_step))) 
+#define PhaseStep AmplitudeGradStep
+#define AmplitudeStep PhaseGradStep
 #define MaxMu 50.0f
 #define MinDeltaMu 1e-5f
 #define MinimumPower 1e-5f
@@ -42,7 +45,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define MaxPowerDecay 0.98f
 #define MaxPowerRatio 0.8f
 #define BoostWindowNorm (MaxPowerRatio / 95)
-
+#define EPSILON 0.00000762939f //~sqrt(4096) * eps
 
 #if defined(__arm__) && !defined(__force_hiq__)
 #define BuffersToSkip 4
@@ -50,10 +53,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define FFTOverlap 1
 #define CorrelationIntegration 4
 #else
-#define BuffersToSkip 2
-#define FFTIntegration 4
-#define FFTOverlap 2
-#define CorrelationIntegration 16
+#define BuffersToSkip 1
+#define FFTIntegration 8
+#define FFTOverlap 4
+#define CorrelationIntegration 32
 #endif
 
 struct iq_balancer_t;
