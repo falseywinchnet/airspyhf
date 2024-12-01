@@ -57,7 +57,6 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define MATH_PI 3.14159265359
 #endif
 
-#define EPSILON 1e-4f
 #define WorkingBufferLength (FFTBins * (1 + FFTIntegration / FFTOverlap))
 
 #define BUFFER_SIZE 4096
@@ -69,8 +68,6 @@ struct iq_balancer_t
 {
 	float phase_momentum = 0.000000001;
 	float amplitude_momentum = 0.00000001;
-	float decay_a = 0.6321205588285576784044762298385391325541888689682321654921631983;
-	float decay_b = 0.3678794411714423215955237701614608674458111310317678345078368016;
 	float last_frame_end_phase;
 	float last_frame_end_amplitude;
 	double phase;
@@ -345,6 +342,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 	{
 		for (n = 0, m = 0; n <= length - FFTBins && m < iq_balancer->fft_integration; n += FFTBins / iq_balancer->fft_overlap, m++)
 		{
+			power_flag[m] = 0;
 			memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
 
 			power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
@@ -353,13 +351,6 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 			{
 				power_flag[m] = 1;
 				iq_balancer->integrated_total_power += power;
-			}
-			else
-			{
-				power_flag[m] = 0;
-			}
-			if (power_flag[m] == 1)
-			{
 				count++;
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
@@ -393,6 +384,10 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 				}
 
 			}
+			else
+			{
+				power_flag[m] = 0;
+			}
 		}
 	}
 	else
@@ -403,7 +398,6 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 			adjust_benchmark_no_sum(iq_balancer, fftPtr, phase, amplitude);
 			if (iq_balancer->power_flag[m] == 1)
 			{
-				count++;
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
 
@@ -455,7 +449,7 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
 	int i, j;
-	float amplitude, phase, mu, update;
+	float amplitude, phase, mu;
 	complex_t a, b;
 
 	if (iq_balancer->reset_flag)
@@ -510,12 +504,11 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 	b = utility(iq_balancer, iq_balancer->corr_plus);
 
 	mu = a.im - b.im;
-	update = (iq_balancer->decay_a * iq_balancer->phase_momentum) + (iq_balancer->decay_b * a.im);
-	iq_balancer->phase_momentum = (iq_balancer->decay_a * iq_balancer->phase_momentum) + (update * iq_balancer->decay_b);
+
 
 	if (fabs(mu) > MinDeltaMu)
 	{
-		mu = update / mu;
+		mu = a.im / mu;
 		if (mu < -MaxMu)
 			mu = -MaxMu;
 		else if (mu > MaxMu)
@@ -526,15 +519,13 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	phase = dfloat(iq_balancer->phase + PhaseStep * mu);
+	phase = dfloat(iq_balancer->phase + PhaseGradStep * mu);
 
 	mu = a.re - b.re;
-	update = (iq_balancer->decay_a * iq_balancer->amplitude_momentum) + (iq_balancer->decay_b * a.re);
-	iq_balancer->amplitude_momentum = (iq_balancer->decay_a * iq_balancer->amplitude_momentum) + (update * iq_balancer->decay_b);
 
 	if (fabs(mu) > MinDeltaMu)
 	{
-		mu = update / mu;
+		mu = a.re / mu;
 		if (mu < -MaxMu)
 			mu = -MaxMu;
 		else if (mu > MaxMu)
@@ -545,7 +536,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	amplitude = dfloat(iq_balancer->amplitude + AmplitudeStep * mu);
+	amplitude = dfloat(iq_balancer->amplitude + AmplitudeGradStep * mu);
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
