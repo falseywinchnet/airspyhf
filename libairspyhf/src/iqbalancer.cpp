@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex and Claude Sonnet, artifical general intelligence.
+Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
 
 
 
@@ -383,6 +383,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 					}
 				}
 				else {
+					
 					for (i = EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
 					{
 						power = fftPtr[i].re * fftPtr[i].re + fftPtr[i].im * fftPtr[i].im;
@@ -442,35 +443,85 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 }
 
 
-
-
-static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  ccorr)
+static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT ccorr)
 {
-	int i;
-	int j;
+	float weights[FFTBins] = { 0 };
 	float* RESTRICT boost_window = __boost_window;
 	float* RESTRICT boost = iq_balancer->boost;
-
 	float invskip = 1.0f / EdgeBinsToSkip;
 	complex_t acc = { 0, 0 };
-	for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
+	int i;
+
+	// Phase 1: Compute weights for all bins
+	int center = FFTBins / 2;
+	int optimal_bin = iq_balancer->optimal_bin;
+
+	// Pre-compute distance weights for the entire array
+	float distance_weights[FFTBins] = { 0 };
+
+	// Only compute up to center, since it's symmetrical
+	VECTORIZE_LOOP
+	for (i = EdgeBinsToSkip; i <= center - EdgeBinsToSkip; i++)
 	{
-		int distance = abs(i - FFTBins / 2);
-		if (distance > CenterBinsToSkip)
-		{
-			float weight = (distance > EdgeBinsToSkip) ? 1.0f : (distance * invskip);
-			if (iq_balancer->optimal_bin != FFTBins / 2)
-			{
-				weight *= boost_window[abs(iq_balancer->optimal_bin - i)];
-			}
-			weight *= boost[j] / (boost[i] + EPSILON);
-			acc.re += ccorr[i].re * weight;
-			acc.im += ccorr[i].im * weight;
-		}
+	  	distance_weights[i] = 1.0f;
 	}
+	VECTORIZE_LOOP
+	for (i = center - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
+	{
+		distance_weights[i] = 1.0f;
+	}
+	VECTORIZE_LOOP
+		for (i = center - EdgeBinsToSkip; i <= center - CenterBinsToSkip; i++) {
+			int distance = abs(i - center);
+			float weight = distance * invskip;
+			distance_weights[i] = weight;
+			distance_weights[FFTBins - i] = weight;
+		}
+
+	if (optimal_bin != center) {
+		// Compute final weights using vectorizable operations
+		VECTORIZE_LOOP
+			for (i = EdgeBinsToSkip; i <= center + CenterBinsToSkip; i++) {
+				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
+
+				weights[i] = distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+			}
+		VECTORIZE_LOOP
+			for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
+				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
+
+				weights[i] = distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+			}
+	}
+	else {
+		VECTORIZE_LOOP
+			for (i = EdgeBinsToSkip; i <= center + CenterBinsToSkip; i++) {
+				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
+
+				weights[i] = distance_weights[i] * boost_factor;
+			}
+		VECTORIZE_LOOP
+			for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
+				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
+
+				weights[i] = distance_weights[i] * boost_factor;
+			}
+
+	}
+
+	// Phase 2: Compute accumulation (unchanged)
+	VECTORIZE_LOOP
+		for (i = EdgeBinsToSkip; i <= center - CenterBinsToSkip; i++) {
+			acc.re += ccorr[i].re * weights[i];
+			acc.im += ccorr[i].im * weights[i];
+		}
+	VECTORIZE_LOOP
+		for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
+			acc.re += ccorr[i].re * weights[i];
+			acc.im += ccorr[i].im * weights[i];
+		}
 	return acc;
 }
-
 
 
 
