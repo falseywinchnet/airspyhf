@@ -44,11 +44,11 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define VECTORIZE_LOOP _Pragma("loop(ivdep, unroll)")
+#define VECTORIZE_LOOP _Pragma("loop(ivdep)")
 #elif defined(__clang__)
-#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable) unroll(enable)")
+#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
 #elif defined(__GNUC__)
-#define VECTORIZE_LOOP _Pragma("GCC ivdep") _Pragma("GCC unroll 4")
+#define VECTORIZE_LOOP _Pragma("GCC ivdep"))
 #else
 #define VECTORIZE_LOOP
 #endif
@@ -63,6 +63,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define TRIPLE_BUFFER_SIZE (BUFFER_SIZE * 3)
 #define MAX_EXTREMA BUFFER_SIZE+2  // Adjust as needed
 #define HISTORY_SIZE 5
+
 
 struct iq_balancer_t
 {
@@ -107,9 +108,10 @@ struct iq_balancer_t
 
 };
 
-
-static uint8_t __lib_initialized = 0;
 static complex_t __fft_mem[FFTBins];
+static uint8_t __lib_initialized = 0;
+
+
 
 float dfloat(double value) {
 	return static_cast<float>(value);
@@ -117,7 +119,7 @@ float dfloat(double value) {
 
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
-static complex_t twiddle_factors[FFTBins/2];
+static complex_t twiddle_factors[FFTBins / 2];
 #define HISTORY_SIZE 5  // Number of historical points to keep
 
 
@@ -133,7 +135,7 @@ static void __init_library()
 
 	const int length = FFTBins - 1;
 
-	/*for (i = 0; i <= length; i++)
+	for (i = 0; i <= length; i++)
 	{
 		__fft_window[i] = (float)(
 			+0.35875f
@@ -142,12 +144,12 @@ static void __init_library()
 			- 0.01168f * cos(6.0 * MATH_PI * i / length)
 			);
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
-	}*/
+	}
 
 
 	//Albrecht 10 terms 
-	
-	for (i = 0; i <= length; i++)
+
+	/*for (i = 0; i <= length; i++)
 	{
 		__fft_window[i] = (dfloat)(
 			+0.2260721603916653632706
@@ -162,8 +164,8 @@ static void __init_library()
 			- 0.000000002416881143872775668631 * cos(18.0 * MATH_PI * i / length)
 			);
 		__boost_window[i] = (dfloat)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
-	}
-	
+	}*/
+
 	for (int i = 0; i < FFTBins / 2; i++) {
 		double angle = -2.0 * MATH_PI * i / FFTBins;
 		twiddle_factors[i].re = dfloat(cos(angle));
@@ -177,7 +179,7 @@ static void window(complex_t* RESTRICT buffer, int length)
 {
 	int i;
 
-		VECTORIZE_LOOP
+	VECTORIZE_LOOP
 		for (i = 0; i < length; i++)
 		{
 			buffer[i].re *= __fft_window[i];
@@ -262,7 +264,7 @@ static void adjust_phase_amplitude(struct iq_balancer_t* iq_balancer, complex_t*
 		iq[i].re += dfloat(phase * im);
 		iq[i].im += dfloat(phase * re);
 
-		iq[i].re = dfloat(iq[i].re *( 1 + amplitude));
+		iq[i].re = dfloat(iq[i].re * (1 + amplitude));
 		iq[i].im = dfloat(iq[i].im * (1 - amplitude));
 	}
 
@@ -332,7 +334,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 	int* RESTRICT power_flag = iq_balancer->power_flag;
 
 	int n, m = 0;
-	int i, j;
+	int i;
 	int count = 0;
 	float power = 0.0f;
 	float phase = dfloat(iq_balancer->phase + step * PhaseStep);
@@ -354,16 +356,34 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 				count++;
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
-				for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
-				{
-					cc = multiply_complex_complex(fftPtr + i, fftPtr + j);
-					ccorr[i].re += cc.re;
-					ccorr[i].im += cc.im;
+				//186, j = 4096-186, i counts to j,
+				//j counts to i
+				VECTORIZE_LOOP
+				for (i = EdgeBinsToSkip; i < FFTBins / 2 - 1; i++) {
+						cc = multiply_complex_complex(fftPtr + i, fftPtr + FFTBins - i);
+						ccorr[i].re += cc.re;
+						ccorr[i].im += cc.im;
+					}
 
-					ccorr[j].re = ccorr[i].re;
-					ccorr[j].im = ccorr[i].im;
+				// Mirror the results
+				VECTORIZE_LOOP
+				for (i = EdgeBinsToSkip; i < FFTBins / 2 - 1; i++) {
+					ccorr[FFTBins - i].re = ccorr[i].re;
+					ccorr[FFTBins - i].im = ccorr[i].im;
 				}
+				VECTORIZE_LOOP
+					for (i = FFTBins / 2 ; i <= FFTBins - EdgeBinsToSkip; i++) {
+						cc = multiply_complex_complex(fftPtr + i, fftPtr + FFTBins - i);
+						ccorr[i].re += cc.re;
+						ccorr[i].im += cc.im;
+					}
 
+				// Mirror the results
+				
+					for (i = FFTBins / 2; i <= FFTBins - EdgeBinsToSkip; i++) {
+						ccorr[FFTBins - i].re = ccorr[i].re;
+						ccorr[FFTBins - i].im = ccorr[i].im;
+					}
 
 				if (optimal_bin == FFTBins / 2) {
 
@@ -401,20 +421,40 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 				window(fftPtr, FFTBins);
 				fft(fftPtr, FFTBins);
 
-				for (i = EdgeBinsToSkip, j = FFTBins - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++, j--)
-				{
-					cc = multiply_complex_complex(fftPtr + i, fftPtr + j);
-					ccorr[i].re += cc.re;
-					ccorr[i].im += cc.im;
+				VECTORIZE_LOOP
+					for (i = EdgeBinsToSkip; i < FFTBins / 2 - 1; i++) {
+						cc = multiply_complex_complex(fftPtr + i, fftPtr + FFTBins - i);
+						ccorr[i].re += cc.re;
+						ccorr[i].im += cc.im;
+					}
 
-					ccorr[j].re = ccorr[i].re;
-					ccorr[j].im = ccorr[i].im;
-				}
+				// Mirror the results
+				VECTORIZE_LOOP
+					for (i = EdgeBinsToSkip; i < FFTBins / 2 - 1; i++) {
+						ccorr[FFTBins - i].re = ccorr[i].re;
+						ccorr[FFTBins - i].im = ccorr[i].im;
+					}
+				VECTORIZE_LOOP
+					for (i = FFTBins / 2; i <= FFTBins - EdgeBinsToSkip; i++) {
+						cc = multiply_complex_complex(fftPtr + i, fftPtr + FFTBins - i);
+						ccorr[i].re += cc.re;
+						ccorr[i].im += cc.im;
+					}
+
+				// Mirror the results
+				
+					for (i = FFTBins / 2; i <= FFTBins - EdgeBinsToSkip; i++) {
+						ccorr[FFTBins - i].re = ccorr[i].re;
+						ccorr[FFTBins - i].im = ccorr[i].im;
+					}
 			}
 		}
 	}
 	return count;
 }
+
+
+
 
 static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT  ccorr)
 {
@@ -519,7 +559,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	phase = dfloat(iq_balancer->phase + PhaseGradStep * mu);
+	phase = dfloat(iq_balancer->phase + PhaseStep * mu);
 
 	mu = a.re - b.re;
 
@@ -536,7 +576,7 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 		mu = 0;
 	}
 
-	amplitude = dfloat(iq_balancer->amplitude + AmplitudeGradStep * mu);
+	amplitude = dfloat(iq_balancer->amplitude + AmplitudeStep * mu);
 
 	if (iq_balancer->no_of_raw < MaxLookback)
 		iq_balancer->no_of_raw++;
@@ -579,29 +619,29 @@ static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq,
 }
 
 
-void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t*  iq, int length)
+void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* iq, int length)
 {
 	int count;
-	cancel_dc(iq_balancer, iq, length,1e-4f);
+	cancel_dc(iq_balancer, iq, length, 1e-4f);
 
 	count = WorkingBufferLength - iq_balancer->working_buffer_pos;
-		if (count >= length)
-		{
-			count = length;
-		}
-		memcpy(iq_balancer->working_buffer + iq_balancer->working_buffer_pos, iq, count * sizeof(complex_t));
-		iq_balancer->working_buffer_pos += count;
-		if (iq_balancer->working_buffer_pos >= WorkingBufferLength)
-		{
-			iq_balancer->working_buffer_pos = 0;
+	if (count >= length)
+	{
+		count = length;
+	}
+	memcpy(iq_balancer->working_buffer + iq_balancer->working_buffer_pos, iq, count * sizeof(complex_t));
+	iq_balancer->working_buffer_pos += count;
+	if (iq_balancer->working_buffer_pos >= WorkingBufferLength)
+	{
+		iq_balancer->working_buffer_pos = 0;
 
-			if (++iq_balancer->skipped_buffers > iq_balancer->buffers_to_skip)
-			{
-				iq_balancer->skipped_buffers = 0;
-				estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
+		if (++iq_balancer->skipped_buffers > iq_balancer->buffers_to_skip)
+		{
+			iq_balancer->skipped_buffers = 0;
+			estimate_imbalance(iq_balancer, iq_balancer->working_buffer, WorkingBufferLength);
 
-			}
 		}
+	}
 
 	adjust_phase_amplitude(iq_balancer, iq, length);
 }
@@ -641,7 +681,7 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 		// Handle memory allocation failure
 		return NULL;
 	}
-	
+
 	memset(instance, 0, sizeof(struct iq_balancer_t));
 	instance->phase = initial_phase;
 	instance->amplitude = initial_amplitude;
@@ -652,11 +692,12 @@ struct iq_balancer_t* ADDCALL iq_balancer_create(float initial_phase, float init
 	instance->fft_overlap = FFTOverlap;
 	instance->correlation_integration = CorrelationIntegration;
 
+
 	instance->corr = (complex_t*)malloc(FFTBins * sizeof(complex_t));
 	instance->corr_plus = (complex_t*)malloc(FFTBins * sizeof(complex_t));
 	instance->working_buffer = (complex_t*)malloc(WorkingBufferLength * sizeof(complex_t));
-
 	instance->boost = (float*)malloc(FFTBins * sizeof(float));
+
 
 	__init_library();
 	return instance;
