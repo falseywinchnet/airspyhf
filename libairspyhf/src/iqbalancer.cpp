@@ -2,7 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
-Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
+Contributions to this work were provided by OpenAI Codex and Claude Sonnet, artifical general intelligence.
 
 
 
