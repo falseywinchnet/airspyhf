@@ -5,11 +5,11 @@ This repository contains host software (Linux/Windows) for Airspy HF+, a high pe
 ## Please use the official version at https://github.com/airspy/airspyhf if you dont know c++. this modded version is not supported.
 
 
-It is also refactored for a performance boost.
-it has been changed to no longer perform any kind of tapering or buffer skipping internally, choosing instead to trust SDR software writers. This can result in a large initial DC bump, so the first few hundred MS after starting the radio or changing IQ frequency should be dropped or tapered appropriately. it also has some different approaches to quite a few things..
+It is also refactored for a performance boost and has very vectored code.
+it has been changed to no longer perform any kind of tapering or buffer skipping internally, choosing instead to trust SDR software writers. This can result in a large initial DC bump, so the first few hundred MS after starting the radio or changing IQ frequency should be dropped or tapered appropriately. 
 
-2. different window function- a little bit better tapering
-3. some other tweaks to taste - possibly more decodes on most bands
+2. different window function commented, you can try it
+3. some other tweaks to taste - possibly more decodes on most bands - adjusts iq constantly
 
 http://www.airspy.com/airspy-hf-plus
 
