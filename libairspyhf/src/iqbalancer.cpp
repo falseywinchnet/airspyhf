@@ -59,23 +59,13 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 #define WorkingBufferLength (FFTBins * (1 + FFTIntegration / FFTOverlap))
 
-#define BUFFER_SIZE 4096
-#define TRIPLE_BUFFER_SIZE (BUFFER_SIZE * 3)
-#define MAX_EXTREMA BUFFER_SIZE+2  // Adjust as needed
-#define HISTORY_SIZE 5
 
 
 struct iq_balancer_t
 {
-	float phase_momentum = 0.000000001;
-	float amplitude_momentum = 0.00000001;
-	float last_frame_end_phase;
-	float last_frame_end_amplitude;
 	double phase;
 	double last_phase;
 	double phase_new;
-	double amplitude_new;
-	double learning_rate;  // Controls how fast we update based on the gradient
 	double amplitude;
 	double last_amplitude;
 	double iavg;
@@ -91,8 +81,6 @@ struct iq_balancer_t
 	int fft_integration;
 	int fft_overlap;
 	int correlation_integration;
-	float phase_history[HISTORY_SIZE];
-	float amplitude_history[HISTORY_SIZE];
 	int history_index = 0;
 	int no_of_avg;
 	int no_of_raw;
