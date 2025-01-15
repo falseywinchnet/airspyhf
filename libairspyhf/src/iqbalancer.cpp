@@ -107,6 +107,7 @@ float dfloat(double value) {
 
 static float __fft_window[FFTBins];
 static float __boost_window[FFTBins];
+static float __distance_weights[FFTBins];
 static complex_t twiddle_factors[FFTBins / 2];
 #define HISTORY_SIZE 5  // Number of historical points to keep
 
@@ -159,6 +160,27 @@ static void __init_library()
 		twiddle_factors[i].re = dfloat(cos(angle));
 		twiddle_factors[i].im = dfloat(sin(angle));
 	}
+	int center = FFTBins / 2;
+	float invskip = 1.0f / EdgeBinsToSkip;
+
+	VECTORIZE_LOOP
+		for (i = EdgeBinsToSkip; i <= center - EdgeBinsToSkip; i++)
+		{
+			__distance_weights[i] = 1.0f;
+		}
+	VECTORIZE_LOOP
+		for (i = center - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
+		{
+			__distance_weights[i] = 1.0f;
+		}
+
+	for (i = center - EdgeBinsToSkip; i <= center - CenterBinsToSkip; i++) {
+		int distance = abs(i - center);
+		float weight = distance * invskip;
+		__distance_weights[i] = weight;
+		__distance_weights[FFTBins - i] = weight;
+	}
+
 
 	__lib_initialized = 1;
 }
@@ -445,10 +467,9 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 
 static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT ccorr)
 {
-	float weights[FFTBins] = { 0 };
 	float* RESTRICT boost_window = __boost_window;
+	float* RESTRICT distance_weights = __distance_weights;
 	float* RESTRICT boost = iq_balancer->boost;
-	float invskip = 1.0f / EdgeBinsToSkip;
 	complex_t acc = { 0, 0 };
 	int i;
 
@@ -457,26 +478,7 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 	int optimal_bin = iq_balancer->optimal_bin;
 
 	// Pre-compute distance weights for the entire array
-	float distance_weights[FFTBins] = { 0 };
 
-	// Only compute up to center, since it's symmetrical
-	VECTORIZE_LOOP
-	for (i = EdgeBinsToSkip; i <= center - EdgeBinsToSkip; i++)
-	{
-	  	distance_weights[i] = 1.0f;
-	}
-	VECTORIZE_LOOP
-	for (i = center - EdgeBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++)
-	{
-		distance_weights[i] = 1.0f;
-	}
-	VECTORIZE_LOOP
-		for (i = center - EdgeBinsToSkip; i <= center - CenterBinsToSkip; i++) {
-			int distance = abs(i - center);
-			float weight = distance * invskip;
-			distance_weights[i] = weight;
-			distance_weights[FFTBins - i] = weight;
-		}
 
 	if (optimal_bin != center) {
 		// Compute final weights using vectorizable operations
@@ -484,13 +486,16 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 			for (i = EdgeBinsToSkip; i <= center + CenterBinsToSkip; i++) {
 				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
 
-				weights[i] = distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+				acc.re += ccorr[i].re * distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+				acc.im += ccorr[i].im * distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
 			}
 		VECTORIZE_LOOP
 			for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
 				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
 
-				weights[i] = distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+				acc.re += ccorr[i].re * distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+				acc.im += ccorr[i].im * distance_weights[i] * boost_factor * boost_window[abs(optimal_bin - i)];
+
 			}
 	}
 	else {
@@ -498,30 +503,22 @@ static complex_t utility(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT 
 			for (i = EdgeBinsToSkip; i <= center + CenterBinsToSkip; i++) {
 				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
 
-				weights[i] = distance_weights[i] * boost_factor;
+				acc.re += ccorr[i].re * distance_weights[i] * boost_factor;
+				acc.im += ccorr[i].im * distance_weights[i] * boost_factor;
 			}
 		VECTORIZE_LOOP
 			for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
 				float boost_factor = boost[FFTBins - i] / (boost[i] + EPSILON);
 
-				weights[i] = distance_weights[i] * boost_factor;
+				acc.re += ccorr[i].re * distance_weights[i] * boost_factor;
+				acc.im += ccorr[i].im * distance_weights[i] * boost_factor;
 			}
 
 	}
 
-	// Phase 2: Compute accumulation (unchanged)
-	VECTORIZE_LOOP
-		for (i = EdgeBinsToSkip; i <= center - CenterBinsToSkip; i++) {
-			acc.re += ccorr[i].re * weights[i];
-			acc.im += ccorr[i].im * weights[i];
-		}
-	VECTORIZE_LOOP
-		for (i = center + CenterBinsToSkip; i <= FFTBins - EdgeBinsToSkip; i++) {
-			acc.re += ccorr[i].re * weights[i];
-			acc.im += ccorr[i].im * weights[i];
-		}
 	return acc;
 }
+
 
 
 
