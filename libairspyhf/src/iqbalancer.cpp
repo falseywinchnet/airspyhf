@@ -305,15 +305,17 @@ static void adjust_benchmark_no_sum(struct iq_balancer_t* iq_balancer, complex_t
 		}
 }
 
-static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude)
+static float adjust_benchmark_return_sum(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, float phase, float amplitude, int length)
 {
 	int i;
 	double sum = 0;
-
+	float scale = 1.0f / (length - 1);
 
 	VECTORIZE_LOOP
 		for (i = 0; i < FFTBins; i++)
 		{
+			double phase = (i * iq_balancer->last_phase + (length - 1 - i) * iq_balancer->phase) * scale;
+			double amplitude = (i * iq_balancer->last_amplitude + (length - 1 - i) * iq_balancer->amplitude) * scale;
 			float re = iq[i].re;
 			float im = iq[i].im;
 
@@ -359,7 +361,7 @@ static int compute_corr(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT i
 			power_flag[m] = 0;
 			memcpy(fftPtr, iq + n, FFTBins * sizeof(complex_t));
 
-			power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude);
+			power = adjust_benchmark_return_sum(iq_balancer, fftPtr, phase, amplitude,length);
 
 			if (power > MinimumPower)
 			{
