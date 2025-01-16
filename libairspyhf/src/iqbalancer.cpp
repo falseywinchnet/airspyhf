@@ -2,6 +2,7 @@
 Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>
 Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>
 Copyright (C) 2024, Joshuah Rainstar <joshuah.rainstar@gmail.com>
+Contributions to this work were provided by OpenAI Codex, an artifical general intelligence.
 
 
 
@@ -69,6 +70,8 @@ struct iq_balancer_t
 	double last_amplitude;
 	double iavg;
 	double qavg;
+	double iavg_after;
+	double qavg_after;
 	double integrated_total_power;
 	double integrated_image_power;
 	double maximum_image_power;
@@ -633,7 +636,22 @@ static void estimate_imbalance(struct iq_balancer_t* iq_balancer, complex_t* iq,
 
 }
 
+static void cancel_dc_after(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
+{
+	int i;
+	double iavg = iq_balancer->iavg_after;
+	double qavg = iq_balancer->qavg_after;//must use double accumulator because of rounding error over time
 
+	for (i = 0; i < length; i++)
+	{
+		iavg = (1 - alpha) * iavg + alpha * iq[i].re;
+		qavg = (1 - alpha) * qavg + alpha * iq[i].im;
+		iq[i].re -= dfloat(iavg);
+		iq[i].im -= dfloat(qavg);
+	}
+	iq_balancer->iavg_after = iavg;
+	iq_balancer->qavg_after = qavg;
+}
 
 
 static void cancel_dc(struct iq_balancer_t* iq_balancer, complex_t* RESTRICT iq, int length, float alpha)
@@ -679,6 +697,8 @@ void ADDCALL iq_balancer_process(struct iq_balancer_t* iq_balancer, complex_t* i
 	}
 
 	adjust_phase_amplitude(iq_balancer, iq, length);
+	cancel_dc_after(iq_balancer, iq, length, 1e-4f);
+
 }
 
 void ADDCALL iq_balancer_set_optimal_point(struct iq_balancer_t* iq_balancer, float w)
