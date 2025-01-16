@@ -2,13 +2,13 @@
 
 This repository contains host software (Linux/Windows) for Airspy HF+, a high performance software defined radio for the HF and VHF bands. This version is modified to make it able to compile and run appropriately on MUSL linux, the latest versions of raspberry pi OS(with the latest libusb 1.0.27), and with as few warnings or errors as possible.
 
-## Please use the official version at https://github.com/airspy/airspyhf if you dont know c++. this modded version is not supported.
+## Please use the official version at https://github.com/airspy/airspyhf if you dont know c++. this modded version is not supported by airspy.
 
 
-It is also refactored for a performance boost and has very vectored code.
-it has been changed to no longer perform any kind of tapering or buffer skipping internally, choosing instead to trust SDR software writers. This can result in a large initial DC bump, so the first few hundred MS after starting the radio or changing IQ frequency should be dropped or tapered appropriately. 
+It is also refactored for a performance boost and has almost all simplified and vectored code.
 
-2. different window function commented, you can try it
+1. it uses less ram and is more computationally efficient.
+2. different window function commented, you can try it, behaves in a similar manner
 3. some other tweaks to taste - possibly more decodes on most bands - adjusts iq constantly
 
 http://www.airspy.com/airspy-hf-plus
