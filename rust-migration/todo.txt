@@ -1,0 +1,69 @@
+1. **Analyze current driver architecture**
+   - Read existing C/C++ sources under `libairspyhf/` and `tools/`.
+   - Document each module's responsibilities, APIs, and dependencies.
+   - Record any external dependencies (e.g., libusb, pthreads).
+   - Note that the repository does not include the full source for these
+     dependencies, which complicates verification efforts and necessitates
+     replacing them with Rust-native alternatives.
+
+2. **Define Rust project structure**
+   - Create a new Cargo workspace for the library and tools.
+   - Provide a `libairspyhf-rs` crate mirroring the C API via `extern "C"`.
+   - Provide CLI utilities as separate crates within the workspace.
+
+3. **Port functionality module by module**
+   - Translate each C source file to a safe Rust module.
+   - Use explicit types and enums to avoid undefined behaviour.
+   - For FFI, expose C-compatible interfaces with `#[no_mangle]` and
+     `extern "C"` functions.
+   - Deny the use of `unsafe` unless absolutely necessary and document each
+     occurrence.
+   - Replace pthread usage with safe Rust equivalents such as `std::thread`,
+     `crossbeam`, or asynchronous runtimes (`tokio`, `async-std`).
+
+4. **Documentation and style**
+   - Write comprehensive `///` documentation for every public item.
+   - Keep naming conventions close to the original C functions to aid
+     understanding for C++ developers.
+   - Include extensive inline comments explaining design decisions.
+
+5. **Testing and validation**
+   - Reproduce the original driver's unit tests if any; otherwise design new
+     tests to cover all APIs.
+   - Use `cargo test` for unit and integration tests.
+   - Apply property-based testing (`proptest` or `quickcheck`) for robustness.
+
+6. **Formal verification efforts**
+   - Run `cargo clippy` and `cargo fmt` with `#![deny(warnings)]`.
+   - Integrate static analyzers (e.g., `cargo audit`, `cargo udeps`).
+   - Explore tools like `Prusti` or `Creusot` to formally verify critical
+     algorithms.
+   - Ensure all memory safety and concurrency aspects are proven or thoroughly
+     tested.
+
+7. **Cross-platform build configuration**
+   - Provide USB access using a pure Rust solution. Prefer the `nusb` crate
+     for higher reliability, falling back to `rusb` or `yusb` only if necessary.
+   - Verify builds on Linux (GNU and MUSL), Windows, and macOS using CI.
+   - Ensure `nusb` supports required features on all platforms and contribute
+     upstream patches if gaps are found.
+   - Document API differences between `libusb` and `nusb` and update the driver
+     design accordingly.
+   - Offer CMake or pkg-config files so that C++ applications can link against
+     the Rust library seamlessly.
+
+8. **Continuous Integration setup**
+   - Configure GitHub Actions to build and test on all supported platforms.
+   - Run formatting, linting, and test suites on each pull request.
+   - Optionally produce release artifacts (static and shared libraries, tools).
+
+9. **Migration guide**
+   - Write detailed documentation describing differences between the original
+     driver and the Rust implementation.
+   - Provide example code snippets for C++ developers demonstrating how to use
+     the new library.
+
+10. **Final review and publish**
+    - Perform a code audit ensuring every module is documented and tested.
+    - Tag a release once parity with the original driver is achieved and
+      verification criteria are met.
