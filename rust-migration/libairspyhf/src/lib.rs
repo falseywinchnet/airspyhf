@@ -4,6 +4,7 @@
 //! interface so existing applications can link against it while the
 //! implementation is gradually migrated to safe Rust.
 
+use std::ffi::c_void;
 use std::io::{self, ErrorKind};
 use std::sync::Mutex;
 
@@ -14,12 +15,14 @@ const USB_PID: u16 = 0x800C;
 const DEFAULT_SAMPLERATE: u32 = 768_000;
 const DEFAULT_ATT_STEP_COUNT: usize = 9;
 const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
+const RAW_BUFFER_COUNT: usize = 8;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
 pub const AIRSPYHF_VER_REVISION: u32 = 0;
 pub const SAMPLES_TO_TRANSFER: i32 = 1024 * 4;
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct AirspyhfComplexFloat {
     pub re: f32,
     pub im: f32,
@@ -63,7 +66,17 @@ const AIRSPYHF_SET_BIAS_TEE: u8 = 22;
 const MAX_VERSION_STRING_SIZE: usize = 255;
 
 /// Type signature for streaming callback.
-pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>;
+#[repr(C)]
+pub struct AirspyhfTransfer {
+    pub device: AirspyhfDeviceHandle,
+    pub ctx: *mut c_void,
+    pub samples: *mut AirspyhfComplexFloat,
+    pub sample_count: i32,
+    pub dropped_samples: u64,
+}
+
+/// Type signature for streaming callback.
+pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut AirspyhfTransfer) -> i32>;
 
 /// Opaque device handle exposed through the C API.
 #[repr(C)]
@@ -92,6 +105,14 @@ pub struct AirspyHfDevice {
     pub(crate) hf_agc: u8,
     pub(crate) hf_agc_threshold: u8,
     pub(crate) hf_lna: u8,
+    pub(crate) freq_delta_hz: f64,
+    pub(crate) freq_shift: f64,
+    pub(crate) vec: AirspyhfComplexFloat,
+    pub(crate) callback: AirspyhfSampleBlockCbFn,
+    pub(crate) ctx: *mut c_void,
+    pub(crate) thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) output_buffer: Vec<AirspyhfComplexFloat>,
+    pub(crate) dropped_buffers: u64,
 }
 
 impl AirspyHfDevice {
@@ -130,6 +151,14 @@ impl AirspyHfDevice {
             hf_agc: 0,
             hf_agc_threshold: 0,
             hf_lna: 0,
+            freq_delta_hz: 0.0,
+            freq_shift: 0.0,
+            vec: AirspyhfComplexFloat { re: 1.0, im: 0.0 },
+            callback: None,
+            ctx: std::ptr::null_mut(),
+            thread: None,
+            output_buffer: Vec::new(),
+            dropped_buffers: 0,
         })
     }
 }
@@ -170,6 +199,14 @@ impl AirspyHfDevice {
                                 hf_agc: 0,
                                 hf_agc_threshold: 0,
                                 hf_lna: 0,
+                                freq_delta_hz: 0.0,
+                                freq_shift: 0.0,
+                                vec: AirspyhfComplexFloat { re: 1.0, im: 0.0 },
+                                callback: None,
+                                ctx: std::ptr::null_mut(),
+                                thread: None,
+                                output_buffer: Vec::new(),
+                                dropped_buffers: 0,
                             });
                         }
                     }
@@ -233,6 +270,136 @@ impl AirspyHfDevice {
         let len = std::cmp::min(data.len(), buf.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok(len)
+    }
+
+    fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
+        let re = a.re * b.re - a.im * b.im;
+        a.im = a.im * b.re + a.re * b.im;
+        a.re = re;
+    }
+
+    fn multiply_complex_real(a: &mut AirspyhfComplexFloat, b: f32) {
+        a.re *= b;
+        a.im *= b;
+    }
+
+    fn rotate_complex(vec: &mut AirspyhfComplexFloat, rot: &AirspyhfComplexFloat) {
+        Self::multiply_complex_complex(vec, rot);
+        let norm = 1.99 - (vec.re * vec.re + vec.im * vec.im);
+        Self::multiply_complex_real(vec, norm as f32);
+    }
+
+    fn convert_samples(&mut self, src: &[i16]) -> usize {
+        let count = src.len() / 2;
+        if self.output_buffer.len() < count {
+            self.output_buffer
+                .resize(count, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
+        }
+        let conv_gain = (1.0f32 / 32768.0) * self.filter_gain;
+        for i in 0..count {
+            let im = src[2 * i] as f32;
+            let re = src[2 * i + 1] as f32;
+            self.output_buffer[i].re = re * conv_gain;
+            self.output_buffer[i].im = im * conv_gain;
+        }
+        if self.enable_dsp != 0 {
+            if !self.is_low_if {
+                unsafe {
+                    iq_balancer::iq_balancer_process(
+                        self.iq_balancer,
+                        self.output_buffer.as_mut_ptr(),
+                        count as i32,
+                    );
+                }
+            }
+            if self.freq_shift != 0.0 {
+                let angle =
+                    2.0 * std::f64::consts::PI * self.freq_shift / self.current_samplerate as f64;
+                let rot = AirspyhfComplexFloat {
+                    re: angle.cos() as f32,
+                    im: -(angle.sin() as f32),
+                };
+                let mut vec = self.vec;
+                for s in &mut self.output_buffer[..count] {
+                    Self::rotate_complex(&mut vec, &rot);
+                    Self::multiply_complex_complex(s, &vec);
+                }
+                self.vec = vec;
+            }
+        }
+        count
+    }
+
+    fn start_streaming(&mut self) -> io::Result<()> {
+        if self.streaming {
+            return Err(io::Error::new(ErrorKind::Other, "already streaming"));
+        }
+        self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
+        let handle = self.handle.lock().unwrap().clone();
+        let dev_ptr = self as *mut AirspyHfDevice as usize;
+        let thread = std::thread::spawn(move || {
+            let dev_ptr = dev_ptr as *mut AirspyHfDevice;
+            let mut iface = match handle.claim_interface(0).wait() {
+                Ok(i) => i,
+                Err(_) => return,
+            };
+            let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
+            for _ in 0..RAW_BUFFER_COUNT {
+                let mut b = ep.allocate(buf_len);
+                b.set_requested_len(buf_len);
+                ep.submit(b);
+            }
+            loop {
+                if let Some(mut c) = ep.wait_next_complete(Duration::from_millis(1000)) {
+                    let d = unsafe { &mut *dev_ptr };
+                    if d.stop_requested {
+                        break;
+                    }
+                    if c.status.is_err() {
+                        break;
+                    }
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            c.buffer.as_ptr() as *const i16,
+                            c.buffer.len() / 2,
+                        )
+                    };
+                    let count = d.convert_samples(slice);
+                    if let Some(cb) = d.callback {
+                        let mut transfer = AirspyhfTransfer {
+                            device: dev_ptr,
+                            ctx: d.ctx,
+                            samples: d.output_buffer.as_mut_ptr(),
+                            sample_count: count as i32,
+                            dropped_samples: d.dropped_buffers,
+                        };
+                        if unsafe { cb(&mut transfer as *mut _) } != 0 {
+                            d.stop_requested = true;
+                            break;
+                        }
+                    }
+                    ep.submit(c.buffer);
+                } else {
+                    break;
+                }
+            }
+        });
+        self.thread = Some(thread);
+        self.streaming = true;
+        Ok(())
+    }
+
+    fn stop_streaming(&mut self) {
+        self.stop_requested = true;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+        self.streaming = false;
     }
 }
 
@@ -587,19 +754,19 @@ pub unsafe extern "C" fn airspyhf_flash_configuration(_dev: AirspyhfDeviceHandle
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_start(
     dev: AirspyhfDeviceHandle,
-    _cb: AirspyhfSampleBlockCbFn,
-    _ctx: *mut std::ffi::c_void,
+    cb: AirspyhfSampleBlockCbFn,
+    ctx: *mut c_void,
 ) -> i32 {
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    if d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]).is_err() {
-        return AirspyhfError::Error as i32;
+    d.callback = cb;
+    d.ctx = ctx;
+    match d.start_streaming() {
+        Ok(()) => AirspyhfError::Success as i32,
+        Err(_) => AirspyhfError::Error as i32,
     }
-    d.streaming = true;
-    d.stop_requested = false;
-    AirspyhfError::Success as i32
 }
 
 #[no_mangle]
@@ -608,9 +775,7 @@ pub unsafe extern "C" fn airspyhf_stop(dev: AirspyhfDeviceHandle) -> i32 {
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-    d.stop_requested = true;
-    d.streaming = false;
+    d.stop_streaming();
     AirspyhfError::Success as i32
 }
 
