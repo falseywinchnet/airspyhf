@@ -6,12 +6,21 @@
 
 use std::io::{self, ErrorKind};
 use std::sync::Mutex;
+
+mod iq_balancer;
+use iq_balancer::IqBalancer;
 const USB_VID: u16 = 0x03EB;
 const USB_PID: u16 = 0x800C;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
 pub const AIRSPYHF_VER_REVISION: u32 = 0;
+pub const SAMPLES_TO_TRANSFER: i32 = 1024 * 4;
+#[repr(C)]
+pub struct AirspyhfComplexFloat {
+    pub re: f32,
+    pub im: f32,
+}
 #[repr(C)]
 pub struct AirspyhfLibVersion {
     pub major_version: u32,
@@ -26,9 +35,11 @@ use nusb::{self, Device, MaybeFuture};
 pub struct AirspyHfDevice {
     /// Underlying USB handle.  Wrapped in a mutex for thread safety.
     pub(crate) handle: Mutex<Device>,
-    /// Placeholder for additional state that will be ported from the
-    /// original C driver.
-    _private: (),
+    pub(crate) streaming: bool,
+    pub(crate) stop_requested: bool,
+    pub(crate) is_low_if: bool,
+    pub(crate) enable_dsp: u8,
+    pub(crate) iq_balancer: *mut IqBalancer,
 }
 
 impl AirspyHfDevice {
@@ -40,9 +51,14 @@ impl AirspyHfDevice {
             .find(|d| d.vendor_id() == USB_VID && d.product_id() == USB_PID)
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "AirspyHF not found"))?;
         let device = di.open().wait().map_err(io::Error::other)?;
+        let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
         Ok(AirspyHfDevice {
             handle: Mutex::new(device),
-            _private: (),
+            streaming: false,
+            stop_requested: false,
+            is_low_if: false,
+            enable_dsp: 1,
+            iq_balancer: bal,
         })
     }
 }
@@ -56,9 +72,14 @@ impl AirspyHfDevice {
                     if let Some(hex) = sn.strip_prefix("AIRSPYHF SN:") {
                         if u64::from_str_radix(hex, 16).unwrap_or(0) == serial {
                             let dev = di.open().wait().map_err(io::Error::other)?;
+                            let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
                             return Ok(AirspyHfDevice {
                                 handle: Mutex::new(dev),
-                                _private: (),
+                                streaming: false,
+                                stop_requested: false,
+                                is_low_if: false,
+                                enable_dsp: 1,
+                                iq_balancer: bal,
                             });
                         }
                     }
@@ -126,9 +147,9 @@ pub unsafe extern "C" fn airspyhf_close(dev: AirspyhfDeviceHandle) -> i32 {
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    unsafe {
-        drop(Box::from_raw(dev));
-    }
+    let d = Box::from_raw(dev);
+    iq_balancer::iq_balancer_destroy(d.iq_balancer);
+    // Box drops here
     AirspyhfError::Success as i32
 }
 
@@ -187,4 +208,47 @@ pub unsafe extern "C" fn airspyhf_lib_version(ver: *mut AirspyhfLibVersion) {
     (*ver).major_version = AIRSPYHF_VER_MAJOR;
     (*ver).minor_version = AIRSPYHF_VER_MINOR;
     (*ver).revision = AIRSPYHF_VER_REVISION;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_output_size(_dev: AirspyhfDeviceHandle) -> i32 {
+    SAMPLES_TO_TRANSFER
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_is_low_if(dev: AirspyhfDeviceHandle) -> i32 {
+    if dev.is_null() { return 0; }
+    let d = &*(dev);
+    if d.is_low_if { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_is_streaming(dev: AirspyhfDeviceHandle) -> i32 {
+    if dev.is_null() { return 0; }
+    let d = &*(dev);
+    if d.streaming && !d.stop_requested { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_lib_dsp(dev: AirspyhfDeviceHandle, flag: u8) -> i32 {
+    if dev.is_null() { return AirspyhfError::Error as i32; }
+    let mut_ref = &mut *dev;
+    mut_ref.enable_dsp = flag;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_optimal_iq_correction_point(dev: AirspyhfDeviceHandle, w: f32) -> i32 {
+    if dev.is_null() { return AirspyhfError::Error as i32; }
+    let mut_ref = &mut *dev;
+    iq_balancer::iq_balancer_set_optimal_point(mut_ref.iq_balancer, w);
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_iq_balancer_configure(dev: AirspyhfDeviceHandle, b: i32, fi: i32, fo: i32, ci: i32) -> i32 {
+    if dev.is_null() { return AirspyhfError::Error as i32; }
+    let mut_ref = &mut *dev;
+    iq_balancer::iq_balancer_configure(mut_ref.iq_balancer, b, fi, fo, ci);
+    AirspyhfError::Success as i32
 }
