@@ -33,6 +33,9 @@
   - Streaming implemented with a single worker thread using `std::thread` and
     nusb bulk transfers.  Basic DC removal added to `IqBalancer` but FFT based
     correction is still missing.
+  - Started implementing the FFT based IQ balancer logic.  Current version
+    accumulates samples and estimates imbalance using simple averages as a
+    placeholder.
   - Build now produces an optimized SSE2 DLL via `.cargo/config.toml`.
 
 4. **Documentation and style**
