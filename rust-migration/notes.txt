@@ -40,3 +40,6 @@
 * Performed a final review of the Rust FFI surface. All API functions from
   `airspyhf.h` are now implemented. Added initial Rustdoc comments for the
   public items and created unit tests covering device enumeration routines.
+
+* Cross-platform builds: added example config for Windows
+* Initial exploration of formal verification tools (Prusti, Creusot)
