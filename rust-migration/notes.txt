@@ -27,3 +27,8 @@
   C driver. Frequency tuning now accounts for firmware-provided frequency delta
   just like the original implementation. Streaming enables the receiver after
   the worker thread starts.
+* Added simple DC removal before and after IQ correction. The balancer struct
+  now tracks running averages.  Build configuration updated to enable SSE2 and
+  fast-math optimizations via `.cargo/config.toml` and release profile switched
+  to `opt-level = 3`.  For now we stick with `std::thread` based streaming
+  rather than introducing an async runtime.

@@ -7,4 +7,4 @@ members = [
 opt-level = 1
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
