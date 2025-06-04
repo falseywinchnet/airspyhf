@@ -8,12 +8,13 @@
 2. **Define Rust project structure**
    - **Status**: In progress.
    - Created a Cargo workspace `rust-migration` containing the `libairspyhf` crate.
-   - Exposes a C ABI via `extern "C"` functions (open/close so far).
+   - Exposes a C ABI via `extern "C"` functions (open/close, list devices, open by serial).
    - CLI utilities and examples are not yet ported.
 
 3. **Port functionality module by module**
    - **Status**: Started.
    - Implemented device open/close using `nusb` with basic unit test.
+   - Added `airspyhf_list_devices` and `airspyhf_open_sn` for enumeration.
    - Remaining C functions for streaming, configuration and DSP are unported.
    - Plan to replace pthreads with `std::thread` or an async runtime.
 
@@ -23,6 +24,7 @@
 
 5. **Testing and validation**
    - **Status**: Skeleton test for open/close.
+   - Need unit tests for `airspyhf_list_devices` and `airspyhf_open_sn`.
    - Must design integration tests that mirror the original driver's behaviour.
    - Property-based tests are planned but not implemented.
 
