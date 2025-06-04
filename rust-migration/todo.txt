@@ -15,7 +15,9 @@
    - **Status**: Started.
    - Implemented device open/close using `nusb` with basic unit test.
    - Added `airspyhf_list_devices` and `airspyhf_open_sn` for enumeration.
-   - Remaining C functions for streaming, configuration and DSP are unported.
+   - Added helpers `airspyhf_get_output_size`, `airspyhf_is_streaming`,
+     `airspyhf_is_low_if` and placeholder `IqBalancer` bindings.
+   - Remaining streaming and advanced DSP routines are still unported.
    - Plan to replace pthreads with `std::thread` or an async runtime.
 
 4. **Documentation and style**
