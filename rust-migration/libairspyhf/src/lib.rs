@@ -87,7 +87,11 @@ pub struct AirspyhfTransfer {
 /// Type signature for streaming callback.
 pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut AirspyhfTransfer) -> i32>;
 
-/// Opaque device handle exposed through the C API.
+/// Internal representation of an Airspy HF+ receiver.
+///
+/// The struct is allocated on the heap and exposed to C callers as an
+/// opaque pointer.  All fields are considered implementation details and
+/// may change as the driver evolves.
 #[repr(C)]
 pub struct AirspyHfDevice {
     /// Underlying USB handle.  Wrapped in a mutex for thread safety.
@@ -639,8 +643,26 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn list_devices_returns() {
+        let count = unsafe { airspyhf_list_devices(std::ptr::null_mut(), 0) };
+        assert!(count >= 0 || count == AirspyhfError::Error as i32);
+    }
+
+    #[test]
+    fn open_sn_invalid() {
+        let mut handle: AirspyhfDeviceHandle = std::ptr::null_mut();
+        let ret = unsafe { airspyhf_open_sn(&mut handle as *mut _, 0) };
+        assert_ne!(ret, AirspyhfError::Success as i32);
+        assert!(handle.is_null());
+    }
 }
 
+/// Open a device by serial number.
+///
+/// # Safety
+/// `out` must be a valid pointer that will receive the allocated handle.
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_open_sn(out: *mut AirspyhfDeviceHandle, serial: u64) -> i32 {
     let dev = match AirspyHfDevice::open_by_serial(serial) {
@@ -653,6 +675,10 @@ pub unsafe extern "C" fn airspyhf_open_sn(out: *mut AirspyhfDeviceHandle, serial
     AirspyhfError::Success as i32
 }
 
+/// Enumerate all available devices.
+///
+/// Returns the number of devices found. When `serials` is non-null, up to
+/// `count` serial numbers will be copied into the provided buffer.
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_list_devices(serials: *mut u64, count: i32) -> i32 {
     match AirspyHfDevice::list_serials() {
