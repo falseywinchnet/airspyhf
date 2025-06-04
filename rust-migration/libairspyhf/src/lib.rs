@@ -24,13 +24,10 @@ impl AirspyHfDevice {
     pub fn open_first() -> Result<Self, io::Error> {
         let di = nusb::list_devices()
             .wait()
-            .map_err(|e| io::Error::new(ErrorKind::Other, e))?
+            .map_err(io::Error::other)?
             .find(|d| d.vendor_id() == 0x03EB && d.product_id() == 0x800C)
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "AirspyHF not found"))?;
-        let device = di
-            .open()
-            .wait()
-            .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+        let device = di.open().wait().map_err(io::Error::other)?;
         Ok(AirspyHfDevice {
             handle: Mutex::new(device),
             _private: (),
@@ -50,8 +47,12 @@ pub enum AirspyhfError {
 }
 
 /// Open the first available AirspyHF device.
+///
+/// # Safety
+/// The caller must ensure that `out` is a valid pointer. The function will
+/// write a newly allocated device handle to this location on success.
 #[no_mangle]
-pub extern "C" fn airspyhf_open(out: *mut AirspyhfDeviceHandle) -> i32 {
+pub unsafe extern "C" fn airspyhf_open(out: *mut AirspyhfDeviceHandle) -> i32 {
     let device = match AirspyHfDevice::open_first() {
         Ok(d) => Box::into_raw(Box::new(d)),
         Err(_) => return AirspyhfError::Error as i32,
@@ -65,8 +66,12 @@ pub extern "C" fn airspyhf_open(out: *mut AirspyhfDeviceHandle) -> i32 {
 }
 
 /// Close a previously opened device.
+///
+/// # Safety
+/// The caller must pass a handle obtained from `airspyhf_open`. The handle is
+/// freed and must not be used after this call.
 #[no_mangle]
-pub extern "C" fn airspyhf_close(dev: AirspyhfDeviceHandle) -> i32 {
+pub unsafe extern "C" fn airspyhf_close(dev: AirspyhfDeviceHandle) -> i32 {
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
@@ -86,9 +91,13 @@ mod tests {
     #[test]
     fn open_close() {
         let mut handle: AirspyhfDeviceHandle = std::ptr::null_mut();
-        let _ = airspyhf_open(&mut handle as *mut _);
+        unsafe {
+            let _ = airspyhf_open(&mut handle as *mut _);
+        }
         if !handle.is_null() {
-            assert_eq!(0, airspyhf_close(handle));
+            unsafe {
+                assert_eq!(0, airspyhf_close(handle));
+            }
         }
     }
 }
