@@ -46,13 +46,14 @@
    - Property-based tests are planned but not implemented.
 
 6. **Formal verification efforts**
-   - **Status**: Not started.
+   - **Status**: Exploring tooling.
    - Set up `cargo clippy`, `cargo fmt` with warnings denied.
-   - Investigate `Prusti` or `Creusot` once more code is available.
+   - Experimenting with `Prusti` and `Creusot` on the DSP code.
 
 7. **Cross-platform build configuration**
-   - **Status**: Pending.
+   - **Status**: In progress.
    - Ensure `nusb` works on Linux, Windows, and macOS.
+   - Documented how to build the Rust port on Windows.
    - Provide CMake/pkg-config files for C++ consumers.
 
 8. **Continuous Integration setup**
