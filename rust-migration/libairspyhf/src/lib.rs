@@ -50,6 +50,8 @@ const AIRSPYHF_RECEIVER_MODE: u8 = 1;
 const AIRSPYHF_SET_FREQ: u8 = 2;
 const AIRSPYHF_GET_SAMPLERATES: u8 = 3;
 const AIRSPYHF_SET_SAMPLERATE: u8 = 4;
+const AIRSPYHF_CONFIG_READ: u8 = 5;
+const AIRSPYHF_CONFIG_WRITE: u8 = 6;
 const AIRSPYHF_GET_SERIALNO_BOARDID: u8 = 7;
 const AIRSPYHF_SET_USER_OUTPUT: u8 = 8;
 const AIRSPYHF_GET_VERSION_STRING: u8 = 9;
@@ -64,6 +66,7 @@ const AIRSPYHF_GET_BIAS_TEE_COUNT: u8 = 20;
 const AIRSPYHF_GET_BIAS_TEE_NAME: u8 = 21;
 const AIRSPYHF_SET_BIAS_TEE: u8 = 22;
 const MAX_VERSION_STRING_SIZE: usize = 255;
+const CALIBRATION_MAGIC: u32 = 0xA5CA71B0;
 
 /// Type signature for streaming callback.
 #[repr(C)]
@@ -115,6 +118,15 @@ pub struct AirspyHfDevice {
     pub(crate) dropped_buffers: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FlashConfig {
+    magic_number: u32,
+    calibration_ppb: i32,
+    calibration_vctcxo: i32,
+    frontend_options: u32,
+}
+
 impl AirspyHfDevice {
     /// Attempt to open the first matching AirspyHF device.
     pub fn open_first() -> Result<Self, io::Error> {
@@ -125,7 +137,7 @@ impl AirspyHfDevice {
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "AirspyHF not found"))?;
         let device = di.open().wait().map_err(io::Error::other)?;
         let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
-        Ok(AirspyHfDevice {
+        let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
             streaming: false,
             stop_requested: false,
@@ -159,7 +171,9 @@ impl AirspyHfDevice {
             thread: None,
             output_buffer: Vec::new(),
             dropped_buffers: 0,
-        })
+        };
+        let _ = dev.read_flash_config();
+        Ok(dev)
     }
 }
 
@@ -173,7 +187,7 @@ impl AirspyHfDevice {
                         if u64::from_str_radix(hex, 16).unwrap_or(0) == serial {
                             let dev = di.open().wait().map_err(io::Error::other)?;
                             let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
-                            return Ok(AirspyHfDevice {
+                            let mut dev = AirspyHfDevice {
                                 handle: Mutex::new(dev),
                                 streaming: false,
                                 stop_requested: false,
@@ -207,7 +221,9 @@ impl AirspyHfDevice {
                                 thread: None,
                                 output_buffer: Vec::new(),
                                 dropped_buffers: 0,
-                            });
+                            };
+                            let _ = dev.read_flash_config();
+                            return Ok(dev);
                         }
                     }
                 }
@@ -231,6 +247,49 @@ impl AirspyHfDevice {
             }
         }
         Ok(out)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub fn open_from_fd(fd: std::os::fd::OwnedFd) -> Result<Self, io::Error> {
+        let device = nusb::Device::from_fd(fd).wait().map_err(io::Error::other)?;
+        let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
+        let mut dev = AirspyHfDevice {
+            handle: Mutex::new(device),
+            streaming: false,
+            stop_requested: false,
+            is_low_if: false,
+            enable_dsp: 1,
+            iq_balancer: bal,
+            freq_hz: 0.0,
+            freq_khz: 0,
+            calibration_ppb: 0,
+            calibration_vctcxo: 0,
+            frontend_options: 0,
+            optimal_point: 0.0,
+            current_samplerate: DEFAULT_SAMPLERATE,
+            supported_samplerates: vec![DEFAULT_SAMPLERATE],
+            supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
+                .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
+                .collect(),
+            filter_gain: 1.0,
+            att_index: 0,
+            bias_tee: 0,
+            bias_tee_count: 1,
+            user_output: [0; 4],
+            hf_agc: 0,
+            hf_agc_threshold: 0,
+            hf_lna: 0,
+            freq_delta_hz: 0.0,
+            freq_shift: 0.0,
+            vec: AirspyhfComplexFloat { re: 1.0, im: 0.0 },
+            callback: None,
+            ctx: std::ptr::null_mut(),
+            thread: None,
+            output_buffer: Vec::new(),
+            dropped_buffers: 0,
+        };
+        let _ = dev.read_flash_config();
+        Ok(dev)
     }
 
     fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
@@ -270,6 +329,42 @@ impl AirspyHfDevice {
         let len = std::cmp::min(data.len(), buf.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok(len)
+    }
+
+    fn read_flash_config(&mut self) -> io::Result<()> {
+        let mut buf = [0u8; 256];
+        self.vendor_in(AIRSPYHF_CONFIG_READ, 0, 0, &mut buf)?;
+        if buf.len() < std::mem::size_of::<FlashConfig>() {
+            return Err(io::Error::new(ErrorKind::Other, "short read"));
+        }
+        let cfg = FlashConfig {
+            magic_number: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            calibration_ppb: i32::from_le_bytes(buf[4..8].try_into().unwrap()),
+            calibration_vctcxo: i32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            frontend_options: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+        };
+        if cfg.magic_number == CALIBRATION_MAGIC {
+            self.calibration_ppb = cfg.calibration_ppb;
+            self.calibration_vctcxo = cfg.calibration_vctcxo as u16;
+            self.frontend_options = cfg.frontend_options;
+        }
+        Ok(())
+    }
+
+    fn write_flash_config(&self) -> io::Result<()> {
+        let mut buf = [0u8; 256];
+        let cfg = FlashConfig {
+            magic_number: CALIBRATION_MAGIC,
+            calibration_ppb: self.calibration_ppb,
+            calibration_vctcxo: self.calibration_vctcxo as i32,
+            frontend_options: self.frontend_options,
+        };
+        buf[0..4].copy_from_slice(&cfg.magic_number.to_le_bytes());
+        buf[4..8].copy_from_slice(&cfg.calibration_ppb.to_le_bytes());
+        buf[8..12].copy_from_slice(&cfg.calibration_vctcxo.to_le_bytes());
+        buf[12..16].copy_from_slice(&cfg.frontend_options.to_le_bytes());
+        self.vendor_out(AIRSPYHF_CONFIG_WRITE, 0, 0, &buf)?;
+        Ok(())
     }
 
     fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
@@ -577,8 +672,26 @@ pub unsafe extern "C" fn airspyhf_iq_balancer_configure(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn airspyhf_open_fd(_out: *mut AirspyhfDeviceHandle, _fd: i32) -> i32 {
-    AirspyhfError::Unsupported as i32
+pub unsafe extern "C" fn airspyhf_open_fd(out: *mut AirspyhfDeviceHandle, fd: i32) -> i32 {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        let dev = match AirspyHfDevice::open_from_fd(owned) {
+            Ok(d) => Box::into_raw(Box::new(d)),
+            Err(_) => return AirspyhfError::Error as i32,
+        };
+        if !out.is_null() {
+            *out = dev;
+        }
+        AirspyhfError::Success as i32
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = out;
+        let _ = fd;
+        AirspyhfError::Unsupported as i32
+    }
 }
 
 #[no_mangle]
@@ -748,7 +861,17 @@ pub unsafe extern "C" fn airspyhf_set_vctcxo_calibration(
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_flash_configuration(_dev: AirspyhfDeviceHandle) -> i32 {
-    AirspyhfError::Unsupported as i32
+    if _dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *_dev;
+    if d.streaming {
+        return AirspyhfError::Error as i32;
+    }
+    match d.write_flash_config() {
+        Ok(()) => AirspyhfError::Success as i32,
+        Err(_) => AirspyhfError::Error as i32,
+    }
 }
 
 #[no_mangle]

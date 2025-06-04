@@ -14,6 +14,7 @@
 3. **Port functionality module by module**
    - **Status**: Started.
    - Implemented device open/close using `nusb` with basic unit test.
+   - Added linux support for `airspyhf_open_fd` using `nusb::Device::from_fd`.
    - Added `airspyhf_list_devices` and `airspyhf_open_sn` for enumeration.
    - Added helpers `airspyhf_get_output_size`, `airspyhf_is_streaming`,
      `airspyhf_is_low_if` and placeholder `IqBalancer` bindings.
@@ -21,7 +22,7 @@
      calibration values.
   - Streaming thread implemented using `std::thread` and nusb bulk
     transfers. Samples are converted and passed to the callback.
-    Flash configuration remains stubbed.
+    Flash configuration implemented via vendor commands.
    - Added placeholder implementations for attenuation control, bias tee,
      user output pins and board info APIs.
    - Implemented USB vendor command helpers for frequency, samplerate,
