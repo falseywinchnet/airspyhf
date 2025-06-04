@@ -1,4 +1,48 @@
 use crate::AirspyhfComplexFloat;
+use num_complex::Complex32;
+use rustfft::{FftPlanner, Fft};
+use std::sync::{Arc, OnceLock};
+use std::f32::consts::PI;
+
+const FFTBINS: usize = 4 * 1024;
+const BOOST_FACTOR: f32 = 100000.0;
+const BINS_TO_OPTIMIZE: usize = FFTBINS / 25;
+const EDGE_BINS_TO_SKIP: usize = FFTBINS / 22;
+const CENTER_BINS_TO_SKIP: usize = 2;
+const MAX_LOOKBACK: usize = 4;
+const WORKING_BUFFER_LENGTH: usize = FFTBINS;
+
+static FFT_WINDOW: OnceLock<Vec<f32>> = OnceLock::new();
+static BOOST_WINDOW: OnceLock<Vec<f32>> = OnceLock::new();
+static DISTANCE_WEIGHTS: OnceLock<Vec<f32>> = OnceLock::new();
+
+fn init_library() {
+    FFT_WINDOW.get_or_init(|| {
+        let length = FFTBINS - 1;
+        let mut win = vec![0.0f32; FFTBINS];
+        let mut boost = vec![0.0f32; FFTBINS];
+        for i in 0..=length {
+            win[i] = 0.35875
+                - 0.48829 * (2.0 * PI * i as f32 / length as f32).cos()
+                + 0.14128 * (4.0 * PI * i as f32 / length as f32).cos()
+                - 0.01168 * (6.0 * PI * i as f32 / length as f32).cos();
+            boost[i] = 1.0 / BOOST_FACTOR
+                + 1.0 / f32::exp((i as f32 * 2.0 / BINS_TO_OPTIMIZE as f32).powi(2));
+        }
+        BOOST_WINDOW.set(boost).ok();
+        let mut dist = vec![1.0f32; FFTBINS];
+        let center = FFTBINS / 2;
+        let invskip = 1.0 / EDGE_BINS_TO_SKIP as f32;
+        for i in (center - EDGE_BINS_TO_SKIP)..=(center - CENTER_BINS_TO_SKIP) {
+            let distance = (i as isize - center as isize).abs() as f32;
+            let weight = distance * invskip;
+            dist[i] = weight;
+            dist[FFTBINS - i] = weight;
+        }
+        DISTANCE_WEIGHTS.set(dist).ok();
+        win
+    });
+}
 
 /// Simplified port of the complex IQ balancer used in the C driver.
 ///
@@ -23,10 +67,12 @@ pub struct IqBalancer {
     pub qavg_after: f32,
     pub working_buffer: Vec<AirspyhfComplexFloat>,
     pub skipped_buffers: i32,
+    pub fft: std::sync::Arc<dyn Fft<f32>>,        
 }
 
 impl IqBalancer {
     pub fn new(initial_phase: f32, initial_amplitude: f32) -> Self {
+        init_library();
         Self {
             phase: initial_phase,
             last_phase: initial_phase,
@@ -41,8 +87,9 @@ impl IqBalancer {
             qavg: 0.0,
             iavg_after: 0.0,
             qavg_after: 0.0,
-            working_buffer: Vec::new(),
+            working_buffer: Vec::with_capacity(WORKING_BUFFER_LENGTH),
             skipped_buffers: 0,
+            fft: FftPlanner::new().plan_fft_forward(FFTBINS),
         }
     }
 
@@ -107,7 +154,7 @@ impl IqBalancer {
         self.last_amplitude = self.amplitude;
     }
 
-    fn estimate_imbalance(&mut self, buf: &[AirspyhfComplexFloat]) {
+    fn estimate_imbalance(&mut self, buf: &[AirspyhfComplexFloat], fft: &Arc<dyn Fft<f32>>) {
         // Placeholder for the heavy FFT based algorithm.  For now we compute a
         // very rough phase/amplitude estimate from the mean values.
         if buf.is_empty() {
@@ -136,11 +183,12 @@ impl IqBalancer {
             self.cancel_dc(slice, ALPHA);
 
             self.working_buffer.extend_from_slice(slice);
-            let target = 4096; // placeholder for FFTBins
+            let target = WORKING_BUFFER_LENGTH;
             if self.working_buffer.len() >= target {
                 if self.skipped_buffers >= self.buffers_to_skip {
                     let buf = self.working_buffer.clone();
-                    self.estimate_imbalance(&buf);
+                    let fft = self.fft.clone();
+                    self.estimate_imbalance(&buf, &fft);
                     self.skipped_buffers = 0;
                 } else {
                     self.skipped_buffers += 1;
