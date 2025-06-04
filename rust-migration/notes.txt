@@ -19,3 +19,6 @@
 * Implemented USB vendor command helpers and wired them into several setter
   functions (VCTCXO calibration, frontend options, attenuation, bias tee,
   AGC/LNA and board info queries).
+* Flash configuration write/read implemented via vendor commands.
+* Devices opened now load stored calibration on startup.
+* Added linux-only support for airspyhf_open_fd using nusb::Device::from_fd.
