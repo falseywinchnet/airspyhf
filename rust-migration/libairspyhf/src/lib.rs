@@ -12,6 +12,8 @@ use iq_balancer::IqBalancer;
 const USB_VID: u16 = 0x03EB;
 const USB_PID: u16 = 0x800C;
 const DEFAULT_SAMPLERATE: u32 = 768_000;
+const DEFAULT_ATT_STEP_COUNT: usize = 9;
+const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
@@ -27,6 +29,12 @@ pub struct AirspyhfLibVersion {
     pub major_version: u32,
     pub minor_version: u32,
     pub revision: u32,
+}
+
+#[repr(C)]
+pub struct AirspyhfReadPartIdSerialNo {
+    pub part_id: u32,
+    pub serial_no: [u32; 4],
 }
 
 use nusb::{self, Device, MaybeFuture};
@@ -54,6 +62,13 @@ pub struct AirspyHfDevice {
     pub(crate) supported_samplerates: Vec<u32>,
     pub(crate) supported_att_steps: Vec<f32>,
     pub(crate) filter_gain: f32,
+    pub(crate) att_index: u8,
+    pub(crate) bias_tee: i8,
+    pub(crate) bias_tee_count: i32,
+    pub(crate) user_output: [u8; 4],
+    pub(crate) hf_agc: u8,
+    pub(crate) hf_agc_threshold: u8,
+    pub(crate) hf_lna: u8,
 }
 
 impl AirspyHfDevice {
@@ -81,8 +96,17 @@ impl AirspyHfDevice {
             optimal_point: 0.0,
             current_samplerate: DEFAULT_SAMPLERATE,
             supported_samplerates: vec![DEFAULT_SAMPLERATE],
-            supported_att_steps: vec![0.0],
+            supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
+                .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
+                .collect(),
             filter_gain: 1.0,
+            att_index: 0,
+            bias_tee: 0,
+            bias_tee_count: 1,
+            user_output: [0; 4],
+            hf_agc: 0,
+            hf_agc_threshold: 0,
+            hf_lna: 0,
         })
     }
 }
@@ -112,8 +136,17 @@ impl AirspyHfDevice {
                                 optimal_point: 0.0,
                                 current_samplerate: DEFAULT_SAMPLERATE,
                                 supported_samplerates: vec![DEFAULT_SAMPLERATE],
-                                supported_att_steps: vec![0.0],
+                                supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
+                                    .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
+                                    .collect(),
                                 filter_gain: 1.0,
+                                att_index: 0,
+                                bias_tee: 0,
+                                bias_tee_count: 1,
+                                user_output: [0; 4],
+                                hf_agc: 0,
+                                hf_agc_threshold: 0,
+                                hf_lna: 0,
                             });
                         }
                     }
@@ -351,7 +384,7 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    let mut d = &mut *dev;
+    let d = &mut *dev;
     if d.supported_samplerates.contains(&samplerate) {
         d.current_samplerate = samplerate;
         AirspyhfError::Success as i32
@@ -373,7 +406,7 @@ pub unsafe extern "C" fn airspyhf_set_freq_double(dev: AirspyhfDeviceHandle, fre
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    let mut d = &mut *dev;
+    let d = &mut *dev;
     d.freq_hz = freq_hz;
     d.freq_khz = freq_hz as u32 / 1000;
     AirspyhfError::Success as i32
@@ -485,5 +518,169 @@ pub unsafe extern "C" fn airspyhf_stop(dev: AirspyhfDeviceHandle) -> i32 {
     let d = &mut *dev;
     d.stop_requested = true;
     d.streaming = false;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_att_steps(
+    dev: AirspyhfDeviceHandle,
+    buffer: *mut std::ffi::c_void,
+    len: u32,
+) -> i32 {
+    if dev.is_null() || buffer.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &*(dev);
+    if len == 0 {
+        *(buffer as *mut u32) = d.supported_att_steps.len() as u32;
+    } else if (len as usize) <= d.supported_att_steps.len() {
+        std::ptr::copy_nonoverlapping(
+            d.supported_att_steps.as_ptr(),
+            buffer as *mut f32,
+            len as usize,
+        );
+    } else {
+        return AirspyhfError::Error as i32;
+    }
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_att(dev: AirspyhfDeviceHandle, att: f32) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    let mut idx = 0usize;
+    for (i, val) in d.supported_att_steps.iter().enumerate() {
+        if *val >= att {
+            idx = i;
+            break;
+        }
+    }
+    d.att_index = idx as u8;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_bias_tee(dev: AirspyhfDeviceHandle, value: i8) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    d.bias_tee = value;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_bias_tee_count(
+    dev: AirspyhfDeviceHandle,
+    count: *mut i32,
+) -> i32 {
+    if dev.is_null() || count.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    *count = (*dev).bias_tee_count;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_bias_tee_name(
+    _dev: AirspyhfDeviceHandle,
+    _index: i32,
+    name: *mut std::os::raw::c_char,
+    length: u8,
+) -> i32 {
+    if name.is_null() || length == 0 {
+        return AirspyhfError::Error as i32;
+    }
+    let text = b"HF Bias Tee\0";
+    let copy_len = std::cmp::min((length as usize) - 1, text.len() - 1);
+    std::ptr::copy_nonoverlapping(text.as_ptr() as *const i8, name, copy_len);
+    *name.add(copy_len) = 0;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_board_partid_serialno_read(
+    _dev: AirspyhfDeviceHandle,
+    out: *mut AirspyhfReadPartIdSerialNo,
+) -> i32 {
+    if out.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*out).part_id = 0;
+    (*out).serial_no = [0; 4];
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_version_string_read(
+    _dev: AirspyhfDeviceHandle,
+    version: *mut std::os::raw::c_char,
+    length: u8,
+) -> i32 {
+    if version.is_null() || length == 0 {
+        return AirspyhfError::Error as i32;
+    }
+    let text = b"RUSTPORT 0.1\0";
+    let copy_len = std::cmp::min((length as usize) - 1, text.len() - 1);
+    std::ptr::copy_nonoverlapping(text.as_ptr() as *const i8, version, copy_len);
+    *version.add(copy_len) = 0;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_user_output(
+    dev: AirspyhfDeviceHandle,
+    pin: u32,
+    value: u32,
+) -> i32 {
+    if dev.is_null() || pin > 3 {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    d.user_output[pin as usize] = value as u8;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_hf_agc(dev: AirspyhfDeviceHandle, flag: u8) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).hf_agc = flag;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_hf_agc_threshold(dev: AirspyhfDeviceHandle, flag: u8) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).hf_agc_threshold = flag;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_hf_att(dev: AirspyhfDeviceHandle, index: u8) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    if (index as usize) < d.supported_att_steps.len() {
+        d.att_index = index;
+        AirspyhfError::Success as i32
+    } else {
+        AirspyhfError::Error as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_hf_lna(dev: AirspyhfDeviceHandle, flag: u8) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).hf_lna = flag;
     AirspyhfError::Success as i32
 }
