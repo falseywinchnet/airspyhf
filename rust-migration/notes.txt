@@ -32,3 +32,7 @@
   fast-math optimizations via `.cargo/config.toml` and release profile switched
   to `opt-level = 3`.  For now we stick with `std::thread` based streaming
   rather than introducing an async runtime.
+* Began porting the FFT based IQ balancer algorithm.  The Rust version now
+  accumulates samples and performs a very coarse imbalance estimate each time a
+  working buffer fills.  The logic is still a placeholder but mirrors the C
+  structure so the full algorithm can be implemented later.
