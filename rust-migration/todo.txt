@@ -1,18 +1,18 @@
 1. **Analyze current driver architecture**
-   - **Status**: Initial pass completed.
+   - **Status**: Complete.
    - Read existing C/C++ sources under `libairspyhf/` and `tools/`.
    - Documented major modules and identified heavy use of `libusb` and pthreads.
    - External dependencies noted: `libusb`, `pthread`, Windows-specific USB code.
    - Still need a deeper look at DSP components and platform differences.
 
 2. **Define Rust project structure**
-   - **Status**: In progress.
+   - **Status**: Mostly complete.
    - Created a Cargo workspace `rust-migration` containing the `libairspyhf` crate.
    - Exposes a C ABI via `extern "C"` functions (open/close, list devices, open by serial).
    - CLI utilities and examples are not yet ported.
 
 3. **Port functionality module by module**
-   - **Status**: Started.
+   - **Status**: Core library implemented.
    - Implemented device open/close using `nusb` with basic unit test.
    - Added linux support for `airspyhf_open_fd` using `nusb::Device::from_fd`.
    - Added `airspyhf_list_devices` and `airspyhf_open_sn` for enumeration.
@@ -36,12 +36,12 @@
   - Build now produces an optimized SSE2 DLL via `.cargo/config.toml`.
 
 4. **Documentation and style**
-   - **Status**: Minimal docs in place.
+   - **Status**: Docs started.
    - Need comprehensive `///` documentation for public items and inline comments.
 
 5. **Testing and validation**
-   - **Status**: Skeleton test for open/close.
-   - Need unit tests for `airspyhf_list_devices` and `airspyhf_open_sn`.
+   - **Status**: Basic unit tests in place.
+   - Added tests for `airspyhf_list_devices` and `airspyhf_open_sn`.
    - Must design integration tests that mirror the original driver's behaviour.
    - Property-based tests are planned but not implemented.
 

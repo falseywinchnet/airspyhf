@@ -37,3 +37,6 @@
   working buffer fills.  The logic is still a placeholder but mirrors the C
   structure so the full algorithm can be implemented later.
 * Completed port of the IQ balancer algorithm. compute_corr, utility and imbalance estimation now follow the original C implementation using rustfft and f32 arithmetic.
+* Performed a final review of the Rust FFI surface. All API functions from
+  `airspyhf.h` are now implemented. Added initial Rustdoc comments for the
+  public items and created unit tests covering device enumeration routines.
