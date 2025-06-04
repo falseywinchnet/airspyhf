@@ -12,8 +12,10 @@
 * Basic status helpers (`airspyhf_get_output_size`, `airspyhf_is_low_if`, `airspyhf_is_streaming`) implemented.
 * Introduced a minimal `IqBalancer` stub applying simple phase/amplitude correction.
 * Added simple setter/getter functions for frequency, samplerate and calibration fields.
-* Streaming start/stop currently only sends the receiver mode control transfer
-  but still lacks real data threads.
+* Streaming start/stop now spins up a worker thread using `nusb` bulk
+  transfers.  Samples are converted from i16 to floating point and fed
+  to the user's callback.  DSP is still simplified but the basic flow
+  mirrors the C driver.
 * Implemented USB vendor command helpers and wired them into several setter
   functions (VCTCXO calibration, frontend options, attenuation, bias tee,
   AGC/LNA and board info queries).
