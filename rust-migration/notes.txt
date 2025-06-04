@@ -22,3 +22,8 @@
 * Flash configuration write/read implemented via vendor commands.
 * Devices opened now load stored calibration on startup.
 * Added linux-only support for airspyhf_open_fd using nusb::Device::from_fd.
+* Supported samplerates and attenuation steps are now queried from the firmware
+  at device open. Filter gain is retrieved as well so DSP scaling matches the
+  C driver. Frequency tuning now accounts for firmware-provided frequency delta
+  just like the original implementation. Streaming enables the receiver after
+  the worker thread starts.

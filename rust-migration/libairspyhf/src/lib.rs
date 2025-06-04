@@ -16,6 +16,9 @@ const DEFAULT_SAMPLERATE: u32 = 768_000;
 const DEFAULT_ATT_STEP_COUNT: usize = 9;
 const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
 const RAW_BUFFER_COUNT: usize = 8;
+const DEFAULT_IF_SHIFT: u32 = 5000;
+const MIN_ZERO_IF_LO: u32 = 180;
+const MIN_LOW_IF_LO: u32 = 84;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
@@ -59,6 +62,9 @@ const AIRSPYHF_SET_AGC: u8 = 10;
 const AIRSPYHF_SET_AGC_THRESHOLD: u8 = 11;
 const AIRSPYHF_SET_ATT: u8 = 12;
 const AIRSPYHF_SET_LNA: u8 = 13;
+const AIRSPYHF_GET_SAMPLERATE_ARCHITECTURES: u8 = 14;
+const AIRSPYHF_GET_FILTER_GAIN: u8 = 15;
+const AIRSPYHF_GET_FREQ_DELTA: u8 = 16;
 const AIRSPYHF_SET_VCTCXO_CALIBRATION: u8 = 17;
 const AIRSPYHF_SET_FRONTEND_OPTIONS: u8 = 18;
 const AIRSPYHF_GET_ATT_STEPS: u8 = 19;
@@ -99,6 +105,7 @@ pub struct AirspyHfDevice {
     pub(crate) optimal_point: f32,
     pub(crate) current_samplerate: u32,
     pub(crate) supported_samplerates: Vec<u32>,
+    pub(crate) samplerate_architectures: Vec<u8>,
     pub(crate) supported_att_steps: Vec<f32>,
     pub(crate) filter_gain: f32,
     pub(crate) att_index: u8,
@@ -152,6 +159,7 @@ impl AirspyHfDevice {
             optimal_point: 0.0,
             current_samplerate: DEFAULT_SAMPLERATE,
             supported_samplerates: vec![DEFAULT_SAMPLERATE],
+            samplerate_architectures: vec![0],
             supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
                 .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
                 .collect(),
@@ -173,6 +181,9 @@ impl AirspyHfDevice {
             dropped_buffers: 0,
         };
         let _ = dev.read_flash_config();
+        let _ = dev.fetch_samplerates();
+        let _ = dev.fetch_att_steps();
+        let _ = dev.fetch_filter_gain();
         Ok(dev)
     }
 }
@@ -202,6 +213,7 @@ impl AirspyHfDevice {
                                 optimal_point: 0.0,
                                 current_samplerate: DEFAULT_SAMPLERATE,
                                 supported_samplerates: vec![DEFAULT_SAMPLERATE],
+                                samplerate_architectures: vec![0],
                                 supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
                                     .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
                                     .collect(),
@@ -223,6 +235,9 @@ impl AirspyHfDevice {
                                 dropped_buffers: 0,
                             };
                             let _ = dev.read_flash_config();
+                            let _ = dev.fetch_samplerates();
+                            let _ = dev.fetch_att_steps();
+                            let _ = dev.fetch_filter_gain();
                             return Ok(dev);
                         }
                     }
@@ -268,6 +283,7 @@ impl AirspyHfDevice {
             optimal_point: 0.0,
             current_samplerate: DEFAULT_SAMPLERATE,
             supported_samplerates: vec![DEFAULT_SAMPLERATE],
+            samplerate_architectures: vec![0],
             supported_att_steps: (0..DEFAULT_ATT_STEP_COUNT)
                 .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
                 .collect(),
@@ -289,6 +305,9 @@ impl AirspyHfDevice {
             dropped_buffers: 0,
         };
         let _ = dev.read_flash_config();
+        let _ = dev.fetch_samplerates();
+        let _ = dev.fetch_att_steps();
+        let _ = dev.fetch_filter_gain();
         Ok(dev)
     }
 
@@ -364,6 +383,62 @@ impl AirspyHfDevice {
         buf[8..12].copy_from_slice(&cfg.calibration_vctcxo.to_le_bytes());
         buf[12..16].copy_from_slice(&cfg.frontend_options.to_le_bytes());
         self.vendor_out(AIRSPYHF_CONFIG_WRITE, 0, 0, &buf)?;
+        Ok(())
+    }
+
+    fn fetch_samplerates(&mut self) -> io::Result<()> {
+        let mut cnt = [0u8; 4];
+        self.vendor_in(AIRSPYHF_GET_SAMPLERATES, 0, 0, &mut cnt)?;
+        let count = u32::from_le_bytes(cnt);
+        if count == 0 {
+            return Err(io::Error::new(ErrorKind::Other, "no samplerates"));
+        }
+        let mut buf = vec![0u8; count as usize * 4];
+        self.vendor_in(AIRSPYHF_GET_SAMPLERATES, 0, count as u16, &mut buf)?;
+        self.supported_samplerates = buf
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let mut arch = vec![0u8; count as usize];
+        if self
+            .vendor_in(
+                AIRSPYHF_GET_SAMPLERATE_ARCHITECTURES,
+                0,
+                count as u16,
+                &mut arch,
+            )
+            .is_err()
+        {
+            arch.fill(0);
+        }
+        self.samplerate_architectures = arch;
+        self.current_samplerate = self.supported_samplerates[0];
+        self.is_low_if = self.samplerate_architectures.get(0).copied().unwrap_or(0) != 0;
+        Ok(())
+    }
+
+    fn fetch_att_steps(&mut self) -> io::Result<()> {
+        let mut cnt = [0u8; 4];
+        self.vendor_in(AIRSPYHF_GET_ATT_STEPS, 0, 0, &mut cnt)?;
+        let count = u32::from_le_bytes(cnt);
+        let mut buf = vec![0u8; count as usize * 4];
+        self.vendor_in(AIRSPYHF_GET_ATT_STEPS, 0, count as u16, &mut buf)?;
+        self.supported_att_steps = buf
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        if self.supported_att_steps.is_empty() {
+            self.supported_att_steps = (0..DEFAULT_ATT_STEP_COUNT)
+                .map(|i| i as f32 * DEFAULT_ATT_STEP_INCREMENT)
+                .collect();
+        }
+        Ok(())
+    }
+
+    fn fetch_filter_gain(&mut self) -> io::Result<()> {
+        let mut buf = [0u8; 1];
+        self.vendor_in(AIRSPYHF_GET_FILTER_GAIN, 0, 0, &mut buf)?;
+        self.filter_gain = 10f32.powf(-(buf[0] as f32) * 0.05);
         Ok(())
     }
 
@@ -484,6 +559,7 @@ impl AirspyHfDevice {
             }
         });
         self.thread = Some(thread);
+        let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
         self.streaming = true;
         Ok(())
     }
@@ -727,19 +803,36 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    let target = if d.supported_samplerates.contains(&samplerate) {
-        samplerate
+    let idx = if let Some(pos) = d
+        .supported_samplerates
+        .iter()
+        .position(|&r| r == samplerate)
+    {
+        pos
     } else if (samplerate as usize) < d.supported_samplerates.len() {
-        d.supported_samplerates[samplerate as usize]
+        samplerate as usize
     } else {
         return AirspyhfError::Error as i32;
     };
-    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, target as u16, &[])
+    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[])
         .is_err()
     {
         return AirspyhfError::Error as i32;
     }
-    d.current_samplerate = target;
+    d.current_samplerate = d.supported_samplerates[idx];
+    d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+    if !d.is_low_if && d.freq_khz < MIN_ZERO_IF_LO {
+        if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &MIN_ZERO_IF_LO.to_be_bytes())
+            .is_err()
+        {
+            return AirspyhfError::Error as i32;
+        }
+        d.freq_khz = MIN_ZERO_IF_LO;
+    }
+    if d.fetch_filter_gain().is_err() {
+        d.filter_gain = 1.0;
+    }
+    airspyhf_set_freq_double(dev, d.freq_hz);
     AirspyhfError::Success as i32
 }
 
@@ -754,13 +847,37 @@ pub unsafe extern "C" fn airspyhf_set_freq_double(dev: AirspyhfDeviceHandle, fre
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    let freq_khz = (freq_hz as u32) / 1000;
-    let buf = freq_khz.to_be_bytes();
-    if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &buf).is_err() {
-        return AirspyhfError::Error as i32;
+    let if_shift = if d.enable_dsp != 0 && !d.is_low_if {
+        DEFAULT_IF_SHIFT as f64
+    } else {
+        0.0
+    };
+    let adjusted = freq_hz * (1.0e9 + d.calibration_ppb as f64) * 1.0e-9;
+    let lo_low = if d.is_low_if {
+        MIN_LOW_IF_LO
+    } else {
+        MIN_ZERO_IF_LO
+    } as f64;
+    let freq_khz = ((adjusted + if_shift) * 1e-3).round().max(lo_low) as u32;
+
+    if d.freq_khz != freq_khz {
+        if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &freq_khz.to_be_bytes())
+            .is_err()
+        {
+            return AirspyhfError::Error as i32;
+        }
+        d.freq_khz = freq_khz;
+        let mut buf = [0u8; 4];
+        if d.vendor_in(AIRSPYHF_GET_FREQ_DELTA, 0, 0, &mut buf).is_ok() {
+            let val =
+                (((buf[3] as i8 as i32) << 16) | ((buf[2] as i32) << 8) | buf[1] as i32) as f64;
+            d.freq_delta_hz = val * 1e3 / ((1u32 << buf[0]) as f64);
+        }
+        iq_balancer::iq_balancer_set_optimal_point(d.iq_balancer, d.optimal_point);
     }
+
     d.freq_hz = freq_hz;
-    d.freq_khz = freq_khz;
+    d.freq_shift = adjusted - freq_khz as f64 * 1e3 + d.freq_delta_hz;
     AirspyhfError::Success as i32
 }
 
