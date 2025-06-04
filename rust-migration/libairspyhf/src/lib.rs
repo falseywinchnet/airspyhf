@@ -11,6 +11,7 @@ mod iq_balancer;
 use iq_balancer::IqBalancer;
 const USB_VID: u16 = 0x03EB;
 const USB_PID: u16 = 0x800C;
+const DEFAULT_SAMPLERATE: u32 = 768_000;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
@@ -30,6 +31,9 @@ pub struct AirspyhfLibVersion {
 
 use nusb::{self, Device, MaybeFuture};
 
+/// Type signature for streaming callback.
+pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>;
+
 /// Opaque device handle exposed through the C API.
 #[repr(C)]
 pub struct AirspyHfDevice {
@@ -40,6 +44,16 @@ pub struct AirspyHfDevice {
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
     pub(crate) iq_balancer: *mut IqBalancer,
+    pub(crate) freq_hz: f64,
+    pub(crate) freq_khz: u32,
+    pub(crate) calibration_ppb: i32,
+    pub(crate) calibration_vctcxo: u16,
+    pub(crate) frontend_options: u32,
+    pub(crate) optimal_point: f32,
+    pub(crate) current_samplerate: u32,
+    pub(crate) supported_samplerates: Vec<u32>,
+    pub(crate) supported_att_steps: Vec<f32>,
+    pub(crate) filter_gain: f32,
 }
 
 impl AirspyHfDevice {
@@ -59,6 +73,16 @@ impl AirspyHfDevice {
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
+            freq_hz: 0.0,
+            freq_khz: 0,
+            calibration_ppb: 0,
+            calibration_vctcxo: 0,
+            frontend_options: 0,
+            optimal_point: 0.0,
+            current_samplerate: DEFAULT_SAMPLERATE,
+            supported_samplerates: vec![DEFAULT_SAMPLERATE],
+            supported_att_steps: vec![0.0],
+            filter_gain: 1.0,
         })
     }
 }
@@ -80,6 +104,16 @@ impl AirspyHfDevice {
                                 is_low_if: false,
                                 enable_dsp: 1,
                                 iq_balancer: bal,
+                                freq_hz: 0.0,
+                                freq_khz: 0,
+                                calibration_ppb: 0,
+                                calibration_vctcxo: 0,
+                                frontend_options: 0,
+                                optimal_point: 0.0,
+                                current_samplerate: DEFAULT_SAMPLERATE,
+                                supported_samplerates: vec![DEFAULT_SAMPLERATE],
+                                supported_att_steps: vec![0.0],
+                                filter_gain: 1.0,
                             });
                         }
                     }
@@ -217,38 +251,239 @@ pub unsafe extern "C" fn airspyhf_get_output_size(_dev: AirspyhfDeviceHandle) ->
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_is_low_if(dev: AirspyhfDeviceHandle) -> i32 {
-    if dev.is_null() { return 0; }
+    if dev.is_null() {
+        return 0;
+    }
     let d = &*(dev);
-    if d.is_low_if { 1 } else { 0 }
+    if d.is_low_if {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_is_streaming(dev: AirspyhfDeviceHandle) -> i32 {
-    if dev.is_null() { return 0; }
+    if dev.is_null() {
+        return 0;
+    }
     let d = &*(dev);
-    if d.streaming && !d.stop_requested { 1 } else { 0 }
+    if d.streaming && !d.stop_requested {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_set_lib_dsp(dev: AirspyhfDeviceHandle, flag: u8) -> i32 {
-    if dev.is_null() { return AirspyhfError::Error as i32; }
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
     let mut_ref = &mut *dev;
     mut_ref.enable_dsp = flag;
     AirspyhfError::Success as i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn airspyhf_set_optimal_iq_correction_point(dev: AirspyhfDeviceHandle, w: f32) -> i32 {
-    if dev.is_null() { return AirspyhfError::Error as i32; }
+pub unsafe extern "C" fn airspyhf_set_optimal_iq_correction_point(
+    dev: AirspyhfDeviceHandle,
+    w: f32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
     let mut_ref = &mut *dev;
     iq_balancer::iq_balancer_set_optimal_point(mut_ref.iq_balancer, w);
     AirspyhfError::Success as i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn airspyhf_iq_balancer_configure(dev: AirspyhfDeviceHandle, b: i32, fi: i32, fo: i32, ci: i32) -> i32 {
-    if dev.is_null() { return AirspyhfError::Error as i32; }
+pub unsafe extern "C" fn airspyhf_iq_balancer_configure(
+    dev: AirspyhfDeviceHandle,
+    b: i32,
+    fi: i32,
+    fo: i32,
+    ci: i32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
     let mut_ref = &mut *dev;
     iq_balancer::iq_balancer_configure(mut_ref.iq_balancer, b, fi, fo, ci);
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_open_fd(_out: *mut AirspyhfDeviceHandle, _fd: i32) -> i32 {
+    AirspyhfError::Unsupported as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_samplerates(
+    dev: AirspyhfDeviceHandle,
+    buffer: *mut u32,
+    len: u32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &*(dev);
+    if len == 0 {
+        if !buffer.is_null() {
+            *buffer = d.supported_samplerates.len() as u32;
+        }
+    } else if (len as usize) <= d.supported_samplerates.len() {
+        if !buffer.is_null() {
+            std::ptr::copy_nonoverlapping(d.supported_samplerates.as_ptr(), buffer, len as usize);
+        }
+    } else {
+        return AirspyhfError::Error as i32;
+    }
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_samplerate(
+    dev: AirspyhfDeviceHandle,
+    samplerate: u32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let mut d = &mut *dev;
+    if d.supported_samplerates.contains(&samplerate) {
+        d.current_samplerate = samplerate;
+        AirspyhfError::Success as i32
+    } else if (samplerate as usize) < d.supported_samplerates.len() {
+        d.current_samplerate = d.supported_samplerates[samplerate as usize];
+        AirspyhfError::Success as i32
+    } else {
+        AirspyhfError::Error as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_freq(dev: AirspyhfDeviceHandle, freq_hz: u32) -> i32 {
+    airspyhf_set_freq_double(dev, freq_hz as f64)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_freq_double(dev: AirspyhfDeviceHandle, freq_hz: f64) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let mut d = &mut *dev;
+    d.freq_hz = freq_hz;
+    d.freq_khz = freq_hz as u32 / 1000;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_frontend_options(
+    dev: AirspyhfDeviceHandle,
+    flags: *mut u32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    if !flags.is_null() {
+        *flags = (*dev).frontend_options;
+        AirspyhfError::Success as i32
+    } else {
+        AirspyhfError::Error as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_frontend_options(
+    dev: AirspyhfDeviceHandle,
+    flags: u32,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).frontend_options = flags;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_calibration(dev: AirspyhfDeviceHandle, ppb: *mut i32) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    if !ppb.is_null() {
+        *ppb = (*dev).calibration_ppb;
+        AirspyhfError::Success as i32
+    } else {
+        AirspyhfError::Error as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_calibration(dev: AirspyhfDeviceHandle, ppb: i32) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).calibration_ppb = ppb;
+    airspyhf_set_freq_double(dev, (*dev).freq_hz)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_get_vctcxo_calibration(
+    dev: AirspyhfDeviceHandle,
+    vc: *mut u16,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    if !vc.is_null() {
+        *vc = (*dev).calibration_vctcxo;
+        AirspyhfError::Success as i32
+    } else {
+        AirspyhfError::Error as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_set_vctcxo_calibration(
+    dev: AirspyhfDeviceHandle,
+    vc: u16,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    (*dev).calibration_vctcxo = vc;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_flash_configuration(_dev: AirspyhfDeviceHandle) -> i32 {
+    AirspyhfError::Unsupported as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_start(
+    dev: AirspyhfDeviceHandle,
+    _cb: AirspyhfSampleBlockCbFn,
+    _ctx: *mut std::ffi::c_void,
+) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    d.streaming = true;
+    d.stop_requested = false;
+    AirspyhfError::Success as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn airspyhf_stop(dev: AirspyhfDeviceHandle) -> i32 {
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &mut *dev;
+    d.stop_requested = true;
+    d.streaming = false;
     AirspyhfError::Success as i32
 }

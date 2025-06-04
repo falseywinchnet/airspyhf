@@ -40,7 +40,13 @@ impl IqBalancer {
         self.optimal_point = clamped;
     }
 
-    pub fn configure(&mut self, buffers_to_skip: i32, fft_integration: i32, fft_overlap: i32, correlation_integration: i32) {
+    pub fn configure(
+        &mut self,
+        buffers_to_skip: i32,
+        fft_integration: i32,
+        fft_overlap: i32,
+        correlation_integration: i32,
+    ) {
         self.buffers_to_skip = buffers_to_skip;
         self.fft_integration = fft_integration;
         self.fft_overlap = fft_overlap;
@@ -55,8 +61,11 @@ impl IqBalancer {
             let slice = std::slice::from_raw_parts_mut(iq, length as usize);
             let scale = 1.0 / ((length - 1) as f32);
             for (i, s) in slice.iter_mut().enumerate() {
-                let p = (i as f32 * self.last_phase + (length - 1 - i as i32) as f32 * self.phase) * scale;
-                let a = (i as f32 * self.last_amplitude + (length - 1 - i as i32) as f32 * self.amplitude) * scale;
+                let p = (i as f32 * self.last_phase + (length - 1 - i as i32) as f32 * self.phase)
+                    * scale;
+                let a = (i as f32 * self.last_amplitude
+                    + (length - 1 - i as i32) as f32 * self.amplitude)
+                    * scale;
                 let re = s.re;
                 let im = s.im;
                 s.re += p * im;
@@ -71,7 +80,10 @@ impl IqBalancer {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn iq_balancer_create(initial_phase: f32, initial_amplitude: f32) -> *mut IqBalancer {
+pub unsafe extern "C" fn iq_balancer_create(
+    initial_phase: f32,
+    initial_amplitude: f32,
+) -> *mut IqBalancer {
     Box::into_raw(Box::new(IqBalancer::new(initial_phase, initial_amplitude)))
 }
 
@@ -90,16 +102,30 @@ pub unsafe extern "C" fn iq_balancer_set_optimal_point(ptr: *mut IqBalancer, w: 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn iq_balancer_configure(ptr: *mut IqBalancer, buffers_to_skip: i32, fft_integration: i32, fft_overlap: i32, correlation_integration: i32) {
+pub unsafe extern "C" fn iq_balancer_configure(
+    ptr: *mut IqBalancer,
+    buffers_to_skip: i32,
+    fft_integration: i32,
+    fft_overlap: i32,
+    correlation_integration: i32,
+) {
     if let Some(bal) = ptr.as_mut() {
-        bal.configure(buffers_to_skip, fft_integration, fft_overlap, correlation_integration);
+        bal.configure(
+            buffers_to_skip,
+            fft_integration,
+            fft_overlap,
+            correlation_integration,
+        );
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn iq_balancer_process(ptr: *mut IqBalancer, iq: *mut AirspyhfComplexFloat, length: i32) {
+pub unsafe extern "C" fn iq_balancer_process(
+    ptr: *mut IqBalancer,
+    iq: *mut AirspyhfComplexFloat,
+    length: i32,
+) {
     if let Some(bal) = ptr.as_mut() {
         bal.process(iq, length);
     }
 }
-

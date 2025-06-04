@@ -11,3 +11,5 @@
 * Device enumeration now implemented via `airspyhf_list_devices` and `airspyhf_open_sn`. Need to verify serial string parsing on Windows.
 * Basic status helpers (`airspyhf_get_output_size`, `airspyhf_is_low_if`, `airspyhf_is_streaming`) implemented.
 * Introduced a minimal `IqBalancer` stub applying simple phase/amplitude correction.
+* Added simple setter/getter functions for frequency, samplerate and calibration fields.
+* Streaming start/stop currently just toggles flags without spawning threads.
