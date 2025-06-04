@@ -12,7 +12,8 @@
 * Basic status helpers (`airspyhf_get_output_size`, `airspyhf_is_low_if`, `airspyhf_is_streaming`) implemented.
 * Introduced a minimal `IqBalancer` stub applying simple phase/amplitude correction.
 * Added simple setter/getter functions for frequency, samplerate and calibration fields.
-* Streaming start/stop currently just toggles flags without spawning threads.
-* Implemented stubs for attenuation control, bias tee configuration, user output
-  handling and board information retrieval. These merely store values in the
-  device struct for now; USB commands remain unimplemented.
+* Streaming start/stop currently only sends the receiver mode control transfer
+  but still lacks real data threads.
+* Implemented USB vendor command helpers and wired them into several setter
+  functions (VCTCXO calibration, frontend options, attenuation, bias tee,
+  AGC/LNA and board info queries).

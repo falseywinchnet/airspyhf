@@ -37,7 +37,30 @@ pub struct AirspyhfReadPartIdSerialNo {
     pub serial_no: [u32; 4],
 }
 
+use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 use nusb::{self, Device, MaybeFuture};
+use std::time::Duration;
+
+const CTRL_TIMEOUT_MS: u64 = 500;
+
+const AIRSPYHF_RECEIVER_MODE: u8 = 1;
+const AIRSPYHF_SET_FREQ: u8 = 2;
+const AIRSPYHF_GET_SAMPLERATES: u8 = 3;
+const AIRSPYHF_SET_SAMPLERATE: u8 = 4;
+const AIRSPYHF_GET_SERIALNO_BOARDID: u8 = 7;
+const AIRSPYHF_SET_USER_OUTPUT: u8 = 8;
+const AIRSPYHF_GET_VERSION_STRING: u8 = 9;
+const AIRSPYHF_SET_AGC: u8 = 10;
+const AIRSPYHF_SET_AGC_THRESHOLD: u8 = 11;
+const AIRSPYHF_SET_ATT: u8 = 12;
+const AIRSPYHF_SET_LNA: u8 = 13;
+const AIRSPYHF_SET_VCTCXO_CALIBRATION: u8 = 17;
+const AIRSPYHF_SET_FRONTEND_OPTIONS: u8 = 18;
+const AIRSPYHF_GET_ATT_STEPS: u8 = 19;
+const AIRSPYHF_GET_BIAS_TEE_COUNT: u8 = 20;
+const AIRSPYHF_GET_BIAS_TEE_NAME: u8 = 21;
+const AIRSPYHF_SET_BIAS_TEE: u8 = 22;
+const MAX_VERSION_STRING_SIZE: usize = 255;
 
 /// Type signature for streaming callback.
 pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>;
@@ -171,6 +194,45 @@ impl AirspyHfDevice {
             }
         }
         Ok(out)
+    }
+
+    fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
+        let handle = self.handle.lock().unwrap().clone();
+        handle
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    data,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)
+    }
+
+    fn vendor_in(&self, request: u8, value: u16, index: u16, buf: &mut [u8]) -> io::Result<usize> {
+        let handle = self.handle.lock().unwrap().clone();
+        let data = handle
+            .control_in(
+                ControlIn {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    length: buf.len() as u16,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)?;
+        let len = std::cmp::min(data.len(), buf.len());
+        buf[..len].copy_from_slice(&data[..len]);
+        Ok(len)
     }
 }
 
@@ -385,15 +447,20 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    if d.supported_samplerates.contains(&samplerate) {
-        d.current_samplerate = samplerate;
-        AirspyhfError::Success as i32
+    let target = if d.supported_samplerates.contains(&samplerate) {
+        samplerate
     } else if (samplerate as usize) < d.supported_samplerates.len() {
-        d.current_samplerate = d.supported_samplerates[samplerate as usize];
-        AirspyhfError::Success as i32
+        d.supported_samplerates[samplerate as usize]
     } else {
-        AirspyhfError::Error as i32
+        return AirspyhfError::Error as i32;
+    };
+    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, target as u16, &[])
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
     }
+    d.current_samplerate = target;
+    AirspyhfError::Success as i32
 }
 
 #[no_mangle]
@@ -407,8 +474,13 @@ pub unsafe extern "C" fn airspyhf_set_freq_double(dev: AirspyhfDeviceHandle, fre
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    let freq_khz = (freq_hz as u32) / 1000;
+    let buf = freq_khz.to_be_bytes();
+    if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &buf).is_err() {
+        return AirspyhfError::Error as i32;
+    }
     d.freq_hz = freq_hz;
-    d.freq_khz = freq_hz as u32 / 1000;
+    d.freq_khz = freq_khz;
     AirspyhfError::Success as i32
 }
 
@@ -436,7 +508,18 @@ pub unsafe extern "C" fn airspyhf_set_frontend_options(
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*dev).frontend_options = flags;
+    let d = &mut *dev;
+    if d.vendor_out(
+        AIRSPYHF_SET_FRONTEND_OPTIONS,
+        (flags & 0xffff) as u16,
+        (flags >> 16) as u16,
+        &[],
+    )
+    .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    d.frontend_options = flags;
     AirspyhfError::Success as i32
 }
 
@@ -486,7 +569,13 @@ pub unsafe extern "C" fn airspyhf_set_vctcxo_calibration(
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*dev).calibration_vctcxo = vc;
+    let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_VCTCXO_CALIBRATION, vc, 0, &[])
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    d.calibration_vctcxo = vc;
     AirspyhfError::Success as i32
 }
 
@@ -505,6 +594,9 @@ pub unsafe extern "C" fn airspyhf_start(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]).is_err() {
+        return AirspyhfError::Error as i32;
+    }
     d.streaming = true;
     d.stop_requested = false;
     AirspyhfError::Success as i32
@@ -516,6 +608,7 @@ pub unsafe extern "C" fn airspyhf_stop(dev: AirspyhfDeviceHandle) -> i32 {
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
     d.stop_requested = true;
     d.streaming = false;
     AirspyhfError::Success as i32
@@ -559,6 +652,9 @@ pub unsafe extern "C" fn airspyhf_set_att(dev: AirspyhfDeviceHandle, att: f32) -
         }
     }
     d.att_index = idx as u8;
+    if d.vendor_out(AIRSPYHF_SET_ATT, idx as u16, 0, &[]).is_err() {
+        return AirspyhfError::Error as i32;
+    }
     AirspyhfError::Success as i32
 }
 
@@ -568,6 +664,11 @@ pub unsafe extern "C" fn airspyhf_set_bias_tee(dev: AirspyhfDeviceHandle, value:
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_BIAS_TEE, value as u16, 0, &[])
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
     d.bias_tee = value;
     AirspyhfError::Success as i32
 }
@@ -580,7 +681,14 @@ pub unsafe extern "C" fn airspyhf_get_bias_tee_count(
     if dev.is_null() || count.is_null() {
         return AirspyhfError::Error as i32;
     }
-    *count = (*dev).bias_tee_count;
+    let d = &mut *dev;
+    let mut buf = [0u8; 4];
+    if d.vendor_in(AIRSPYHF_GET_BIAS_TEE_COUNT, 0, 0, &mut buf)
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    *count = i32::from_le_bytes(buf);
     AirspyhfError::Success as i32
 }
 
@@ -594,38 +702,66 @@ pub unsafe extern "C" fn airspyhf_get_bias_tee_name(
     if name.is_null() || length == 0 {
         return AirspyhfError::Error as i32;
     }
-    let text = b"HF Bias Tee\0";
-    let copy_len = std::cmp::min((length as usize) - 1, text.len() - 1);
-    std::ptr::copy_nonoverlapping(text.as_ptr() as *const i8, name, copy_len);
+    let mut buf = [0u8; MAX_VERSION_STRING_SIZE];
+    let d = &*(_dev);
+    if d.vendor_in(AIRSPYHF_GET_BIAS_TEE_NAME, 0, _index as u16, &mut buf)
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    let copy_len = std::cmp::min((length as usize) - 1, buf.len());
+    std::ptr::copy_nonoverlapping(buf.as_ptr() as *const i8, name, copy_len);
     *name.add(copy_len) = 0;
     AirspyhfError::Success as i32
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_board_partid_serialno_read(
-    _dev: AirspyhfDeviceHandle,
+    dev: AirspyhfDeviceHandle,
     out: *mut AirspyhfReadPartIdSerialNo,
 ) -> i32 {
     if out.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*out).part_id = 0;
-    (*out).serial_no = [0; 4];
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &*dev;
+    let mut buf = [0u8; std::mem::size_of::<AirspyhfReadPartIdSerialNo>()];
+    if d.vendor_in(AIRSPYHF_GET_SERIALNO_BOARDID, 0, 0, &mut buf)
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    std::ptr::copy_nonoverlapping(
+        buf.as_ptr(),
+        out as *mut u8,
+        std::mem::size_of::<AirspyhfReadPartIdSerialNo>(),
+    );
     AirspyhfError::Success as i32
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_version_string_read(
-    _dev: AirspyhfDeviceHandle,
+    dev: AirspyhfDeviceHandle,
     version: *mut std::os::raw::c_char,
     length: u8,
 ) -> i32 {
     if version.is_null() || length == 0 {
         return AirspyhfError::Error as i32;
     }
-    let text = b"RUSTPORT 0.1\0";
-    let copy_len = std::cmp::min((length as usize) - 1, text.len() - 1);
-    std::ptr::copy_nonoverlapping(text.as_ptr() as *const i8, version, copy_len);
+    if dev.is_null() {
+        return AirspyhfError::Error as i32;
+    }
+    let d = &*dev;
+    let mut buf = [0u8; MAX_VERSION_STRING_SIZE];
+    if d.vendor_in(AIRSPYHF_GET_VERSION_STRING, 0, 0, &mut buf)
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    let copy_len = std::cmp::min((length as usize) - 1, buf.len());
+    std::ptr::copy_nonoverlapping(buf.as_ptr() as *const i8, version, copy_len);
     *version.add(copy_len) = 0;
     AirspyhfError::Success as i32
 }
@@ -640,6 +776,11 @@ pub unsafe extern "C" fn airspyhf_set_user_output(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_USER_OUTPUT, pin as u16, value as u16, &[])
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
     d.user_output[pin as usize] = value as u8;
     AirspyhfError::Success as i32
 }
@@ -649,7 +790,11 @@ pub unsafe extern "C" fn airspyhf_set_hf_agc(dev: AirspyhfDeviceHandle, flag: u8
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*dev).hf_agc = flag;
+    let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_AGC, flag as u16, 0, &[]).is_err() {
+        return AirspyhfError::Error as i32;
+    }
+    d.hf_agc = flag;
     AirspyhfError::Success as i32
 }
 
@@ -658,7 +803,13 @@ pub unsafe extern "C" fn airspyhf_set_hf_agc_threshold(dev: AirspyhfDeviceHandle
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*dev).hf_agc_threshold = flag;
+    let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_AGC_THRESHOLD, flag as u16, 0, &[])
+        .is_err()
+    {
+        return AirspyhfError::Error as i32;
+    }
+    d.hf_agc_threshold = flag;
     AirspyhfError::Success as i32
 }
 
@@ -669,6 +820,11 @@ pub unsafe extern "C" fn airspyhf_set_hf_att(dev: AirspyhfDeviceHandle, index: u
     }
     let d = &mut *dev;
     if (index as usize) < d.supported_att_steps.len() {
+        if d.vendor_out(AIRSPYHF_SET_ATT, index as u16, 0, &[])
+            .is_err()
+        {
+            return AirspyhfError::Error as i32;
+        }
         d.att_index = index;
         AirspyhfError::Success as i32
     } else {
@@ -681,6 +837,10 @@ pub unsafe extern "C" fn airspyhf_set_hf_lna(dev: AirspyhfDeviceHandle, flag: u8
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    (*dev).hf_lna = flag;
+    let d = &mut *dev;
+    if d.vendor_out(AIRSPYHF_SET_LNA, flag as u16, 0, &[]).is_err() {
+        return AirspyhfError::Error as i32;
+    }
+    d.hf_lna = flag;
     AirspyhfError::Success as i32
 }
