@@ -19,9 +19,12 @@
      `airspyhf_is_low_if` and placeholder `IqBalancer` bindings.
    - Implemented basic setters/getters for samplerate, frequency and
      calibration values.
-   - Stubbed streaming start/stop and flash configuration routines.
+   - Streaming start/stop now issues the receiver mode control transfer but
+     still lacks worker threads. Flash configuration remains stubbed.
    - Added placeholder implementations for attenuation control, bias tee,
      user output pins and board info APIs.
+   - Implemented USB vendor command helpers for frequency, samplerate,
+     calibration, frontend options and bias tee control.
    - Remaining streaming threads and full DSP routines are still unported.
    - Plan to replace pthreads with `std::thread` or an async runtime.
 
