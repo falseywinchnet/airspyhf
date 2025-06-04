@@ -27,6 +27,9 @@
      user output pins and board info APIs.
    - Implemented USB vendor command helpers for frequency, samplerate,
      calibration, frontend options and bias tee control.
+   - Firmware queries now fetch supported samplerates, architectures,
+     attenuation steps and filter gain during device open.
+     Frequency tuning mirrors the C implementation including freq_delta.
    - Remaining streaming threads and full DSP routines are still unported.
    - Plan to replace pthreads with `std::thread` or an async runtime.
 
