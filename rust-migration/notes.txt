@@ -1,0 +1,10 @@
+# Internal notes and questions for the Rust migration
+
+* **nusb evaluation**: The driver skeleton currently relies on the `nusb` crate. I need to verify whether it provides stable support across Linux, Windows, and macOS. If features are missing we may need to patch upstream or fall back to `rusb`.
+* **DSP porting**: The C code has several DSP routines such as the IQ balancer. I'm uncertain how best to translate these to idiomatic Rust while maintaining performance. Investigate using `num-complex` and `futures` for streaming.
+* **Threading model**: The original driver uses pthreads. We haven't decided whether to use `std::thread` or an async runtime (`tokio`). Need to prototype both approaches.
+* **FFI design**: Current interface exposes raw pointers for device handles. Consider a higher-level safe wrapper for internal use while keeping the C ABI stable.
+* **Testing strategy**: Only a single open/close test exists. We will need to design integration tests that exercise streaming and error paths, possibly using property-based testing.
+* **Verification tools**: Unsure whether `Prusti` or `Creusot` will be practical for the DSP pieces. Evaluate once more Rust code is present.
+* **Build system integration**: Eventually the Rust library should produce CMake config files to replace the existing `libairspyhf.pc`. Need to research `cmake-rs` or `pkg-config` helpers.
+* **Next steps**: flesh out the device enumeration and streaming functions in Rust, continue documenting the C modules for reference, and set up CI.
