@@ -20,7 +20,9 @@
    - Implemented basic setters/getters for samplerate, frequency and
      calibration values.
    - Stubbed streaming start/stop and flash configuration routines.
-   - Remaining streaming threads and DSP routines are still unported.
+   - Added placeholder implementations for attenuation control, bias tee,
+     user output pins and board info APIs.
+   - Remaining streaming threads and full DSP routines are still unported.
    - Plan to replace pthreads with `std::thread` or an async runtime.
 
 4. **Documentation and style**
