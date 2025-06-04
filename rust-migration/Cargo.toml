@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "libairspyhf",
+]
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = "z"
