@@ -30,8 +30,10 @@
    - Firmware queries now fetch supported samplerates, architectures,
      attenuation steps and filter gain during device open.
      Frequency tuning mirrors the C implementation including freq_delta.
-   - Remaining streaming threads and full DSP routines are still unported.
-   - Plan to replace pthreads with `std::thread` or an async runtime.
+  - Streaming implemented with a single worker thread using `std::thread` and
+    nusb bulk transfers.  Basic DC removal added to `IqBalancer` but FFT based
+    correction is still missing.
+  - Build now produces an optimized SSE2 DLL via `.cargo/config.toml`.
 
 4. **Documentation and style**
    - **Status**: Minimal docs in place.

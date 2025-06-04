@@ -509,7 +509,7 @@ impl AirspyHfDevice {
         let dev_ptr = self as *mut AirspyHfDevice as usize;
         let thread = std::thread::spawn(move || {
             let dev_ptr = dev_ptr as *mut AirspyHfDevice;
-            let mut iface = match handle.claim_interface(0).wait() {
+            let iface = match handle.claim_interface(0).wait() {
                 Ok(i) => i,
                 Err(_) => return,
             };
@@ -524,7 +524,7 @@ impl AirspyHfDevice {
                 ep.submit(b);
             }
             loop {
-                if let Some(mut c) = ep.wait_next_complete(Duration::from_millis(1000)) {
+                if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
                     let d = unsafe { &mut *dev_ptr };
                     if d.stop_requested {
                         break;

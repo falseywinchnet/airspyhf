@@ -13,6 +13,10 @@ pub struct IqBalancer {
     pub fft_integration: i32,
     pub fft_overlap: i32,
     pub correlation_integration: i32,
+    pub iavg: f32,
+    pub qavg: f32,
+    pub iavg_after: f32,
+    pub qavg_after: f32,
 }
 
 impl IqBalancer {
@@ -27,6 +31,10 @@ impl IqBalancer {
             fft_integration: 8,
             fft_overlap: 4,
             correlation_integration: 32,
+            iavg: 0.0,
+            qavg: 0.0,
+            iavg_after: 0.0,
+            qavg_after: 0.0,
         }
     }
 
@@ -58,7 +66,15 @@ impl IqBalancer {
             return;
         }
         unsafe {
+            const ALPHA: f32 = 1e-4;
             let slice = std::slice::from_raw_parts_mut(iq, length as usize);
+            for s in &mut *slice {
+                self.iavg = (1.0 - ALPHA) * self.iavg + ALPHA * s.re;
+                self.qavg = (1.0 - ALPHA) * self.qavg + ALPHA * s.im;
+                s.re -= self.iavg;
+                s.im -= self.qavg;
+            }
+
             let scale = 1.0 / ((length - 1) as f32);
             for (i, s) in slice.iter_mut().enumerate() {
                 let p = (i as f32 * self.last_phase + (length - 1 - i as i32) as f32 * self.phase)
@@ -72,6 +88,13 @@ impl IqBalancer {
                 s.im += p * re;
                 s.re *= 1.0 + a;
                 s.im *= 1.0 - a;
+            }
+
+            for s in &mut *slice {
+                self.iavg_after = (1.0 - ALPHA) * self.iavg_after + ALPHA * s.re;
+                self.qavg_after = (1.0 - ALPHA) * self.qavg_after + ALPHA * s.im;
+                s.re -= self.iavg_after;
+                s.im -= self.qavg_after;
             }
         }
         self.last_phase = self.phase;
