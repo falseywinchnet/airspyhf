@@ -8,4 +8,6 @@
 * **Verification tools**: Unsure whether `Prusti` or `Creusot` will be practical for the DSP pieces. Evaluate once more Rust code is present.
 * **Build system integration**: Eventually the Rust library should produce CMake config files to replace the existing `libairspyhf.pc`. Need to research `cmake-rs` or `pkg-config` helpers.
 * **Next steps**: flesh out the device enumeration and streaming functions in Rust, continue documenting the C modules for reference, and set up CI.
-\n* Device enumeration now implemented via `airspyhf_list_devices` and `airspyhf_open_sn`. Need to verify serial string parsing on Windows.
+* Device enumeration now implemented via `airspyhf_list_devices` and `airspyhf_open_sn`. Need to verify serial string parsing on Windows.
+* Basic status helpers (`airspyhf_get_output_size`, `airspyhf_is_low_if`, `airspyhf_is_streaming`) implemented.
+* Introduced a minimal `IqBalancer` stub applying simple phase/amplitude correction.
