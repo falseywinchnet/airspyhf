@@ -67,3 +67,11 @@
 10. **Final review and publish**
     - **Status**: Pending.
     - Audit the code, ensure tests pass on all targets, and prepare release tags.
+
+11. **Thread-safety hardening**
+   - **Status**: In progress.
+   - Introduced AtomicBool for streaming and stop flags.
+   - Added mutex-based `param_lock` protecting shared fields.
+   - Streaming thread id stored to avoid deadlocks when stopping from callback.
+   - convert_samples locked around IQ balancing and freq shift.
+   - Added restart/close regression tests.
