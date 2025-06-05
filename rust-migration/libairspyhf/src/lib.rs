@@ -519,6 +519,38 @@ impl AirspyHfDevice {
         Ok(())
     }
 
+    fn clear_halt_ep(&self, ep: u8) {
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+        {
+            let handle = self.handle.lock().unwrap().clone();
+            let _ = handle
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Standard,
+                        recipient: Recipient::Endpoint,
+                        request: 1, // CLEAR_FEATURE
+                        value: 0,   // ENDPOINT_HALT
+                        index: ep as u16,
+                        data: &[],
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
+                .wait();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let handle = match self.handle.lock() {
+                Ok(h) => h.clone(),
+                Err(_) => return,
+            };
+            if let Ok(iface) = handle.claim_interface(0).wait() {
+                if let Ok(mut ep) = iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep) {
+                    let _ = ep.clear_halt().wait();
+                }
+            }
+        }
+    }
+
     fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
         let re = a.re * b.re - a.im * b.im;
         a.im = a.im * b.re + a.re * b.im;
@@ -594,10 +626,14 @@ impl AirspyHfDevice {
                 Ok(i) => i,
                 Err(_) => return,
             };
+            if iface.set_alt_setting(1).wait().is_err() {
+                return;
+            }
             let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
                 Ok(e) => e,
                 Err(_) => return,
             };
+            let _ = ep.clear_halt().wait();
             let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
             for _ in 0..RAW_BUFFER_COUNT {
                 let mut b = ep.allocate(buf_len);
@@ -610,8 +646,14 @@ impl AirspyHfDevice {
                     if d.stop_requested.load(Ordering::Relaxed) {
                         break;
                     }
-                    if c.status.is_err() {
-                        break;
+                    if let Err(e) = c.status {
+                        if e == nusb::transfer::TransferError::Stall {
+                            let _ = ep.clear_halt().wait();
+                            ep.submit(c.buffer);
+                            continue;
+                        } else {
+                            break;
+                        }
                     }
                     let slice = unsafe {
                         std::slice::from_raw_parts(
@@ -981,6 +1023,7 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     } else {
         return AirspyhfError::Error as i32;
     };
+    d.clear_halt_ep(0x81);
     if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[])
         .is_err()
     {
