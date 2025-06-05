@@ -24,7 +24,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 use std::ffi::c_void;
 use std::io::{self, ErrorKind};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     Mutex,
 };
 
@@ -120,8 +120,6 @@ pub struct AirspyHfDevice {
     pub(crate) interface: Mutex<Option<Interface>>,
     pub(crate) streaming: AtomicBool,
     pub(crate) stop_requested: AtomicBool,
-    pub(crate) samplerate_change_requested: AtomicBool,
-    pub(crate) new_samplerate_index: AtomicUsize,
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
     pub(crate) iq_balancer: *mut IqBalancer,
@@ -179,8 +177,6 @@ impl AirspyHfDevice {
            interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
-            samplerate_change_requested: AtomicBool::new(false),
-            new_samplerate_index:     AtomicUsize::new(0),
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -238,8 +234,6 @@ impl AirspyHfDevice {
                                 interface: Mutex::new(None),
                                 streaming: AtomicBool::new(false),
                                 stop_requested: AtomicBool::new(false),
-                                samplerate_change_requested: AtomicBool::new(false),
-                                 new_samplerate_index:     AtomicUsize::new(0),
                                 is_low_if: false,
                                 enable_dsp: 1,
                                 iq_balancer: bal,
@@ -313,8 +307,6 @@ impl AirspyHfDevice {
             interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
-            samplerate_change_requested: AtomicBool::new(false),
-            new_samplerate_index:     AtomicUsize::new(0),
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -729,30 +721,10 @@ impl AirspyHfDevice {
         loop {
             let wait = ep.wait_next_complete(Duration::from_millis(1000));
             let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
-           
             if dev.stop_requested.load(Ordering::Relaxed) {
                 break;
             }
-            // Check for samplerate update request
-            if dev.samplerate_change_requested.swap(false, Ordering::SeqCst) {
-                let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
-                let new_rate = dev.supported_samplerates[idx];
-                let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
-                
-                // Update internal state
-                {
-                   let _g = dev.param_lock.lock().unwrap();
-                   dev.current_samplerate = new_rate;
-                   dev.is_low_if = new_arch != 0;
-                    // Optional: resize buffer if needed
-                   if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
-                        dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
-                   }
-                }
-            
-                // Optionally re-issue any filter gain or IQ correction updates
-                let _ = dev.fetch_filter_gain();
-            }
+
             if let Some(c) = wait {
                 if let Err(e) = c.status {
                     if e == nusb::transfer::TransferError::Stall {
@@ -787,8 +759,6 @@ impl AirspyHfDevice {
                 }
 
                 ep.submit(c.buffer);
-                dev.clear_halt_ep(0x81);
-
             } else {
                 continue; // timeout
             }
@@ -796,7 +766,6 @@ impl AirspyHfDevice {
         // update state on exit
         let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
         let _ = dev.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-
         dev.streaming.store(false, Ordering::SeqCst);
         dev.stop_requested.store(false, Ordering::SeqCst);
         dev.stream_thread_id = None;
@@ -1137,80 +1106,68 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     }
     let d = &mut *dev;
 
-    // 1) find requested rate index
     let idx = match d.supported_samplerates.iter().position(|&r| r == samplerate) {
         Some(i) => i,
         None => return AirspyhfError::Error as i32,
     };
 
-    // Remember whether we were streaming before
     let was_streaming = d.streaming.load(Ordering::SeqCst);
-
-    // 2) Stop firmware streaming if it was running, because we will reset
-    //    (Upon reset, the device will automatically drop its streaming state,
-    //     so we just clear our flag and re-start after reset.)
     if was_streaming {
-        // Tell firmware to stop streaming (so it’s in a known state).
         let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-        // Mark our Rust‐side streaming=false; we’ll restart after reset.
         d.streaming.store(false, Ordering::SeqCst);
     }
 
-    // 3) Issue the SET_SAMPLERATE vendor control (firmware stores new rate)
     if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
-        // If that fails, we’re in a bad state
         return AirspyhfError::Error as i32;
     }
 
-    // 4) Now force a USB reset on the entire device
+    // 1) Force a USB reset on the entire device
     {
-        // Grab a clone of the Device handle, then call reset()
+        // Clone the Device handle and call reset().wait()
         let handle_clone = {
             let guard = d.handle.lock().unwrap();
             guard.clone()
         };
-        // Reset the device – this re-enumerates it
         if handle_clone.reset().wait().is_err() {
-            // If reset fails, we can’t continue
             return AirspyhfError::Error as i32;
         }
     }
 
-    // 5) After reset, the OS re-enumerates. We must re-open/claim interface 0.
-    //    (Re-building our `d.handle` might not be necessary because nusb's Device
-    //     wrapper stays valid across reset(). We just need to re-claim the interface.)
+    // 2) Re‐claim interface 0 (must produce an io::Error, not AirspyhfError)
     {
         let mut iface_guard = d.interface.lock().unwrap();
-        *iface_guard = None; // drop any old claim
+        *iface_guard = None;
 
-        // Now re-claim interface 0 on the same handle
+        // Try to claim interface 0 again; if it fails, return Error via map_err
         let new_iface = d
             .handle
             .lock()
             .unwrap()
             .claim_interface(0)
             .wait()
-            .map_err(|_| AirspyhfError::Error as std::io::Error)
-            .unwrap();
-        *iface_guard = Some(new_iface);
+            .map_err(|_| {
+                io::Error::new(ErrorKind::Other, "claim interface failed after reset")
+            });
+
+        let iface = match new_iface {
+            Ok(i) => i,
+            Err(_) => return AirspyhfError::Error as i32,
+        };
+
+        *iface_guard = Some(iface);
     }
 
-    // 6) Update our Rust‐side state (current_samplerate, is_low_if, filter_gain, etc.)
+    // 3) Update samplerate, IF architecture, filter gain, etc.
     {
         let _g = d.param_lock.lock().unwrap();
         d.current_samplerate = d.supported_samplerates[idx];
         d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
     }
-    if d.fetch_filter_gain().is_err() {
-        d.filter_gain = 1.0;
-    }
-
-    // 7) Re-set frequency (so that any IF shift logic is recalculated)
+    let _ = d.fetch_filter_gain();
     let _ = airspyhf_set_freq_double(dev, d.freq_hz);
 
-    // 8) If we were streaming before, restart streaming now that the device is reset
+    // 4) If we were streaming, start streaming again
     if was_streaming {
-        // In start_streaming(), we re-set altsetting=1 and re-queue bulk‐in transfers.
         if d.start_streaming().is_err() {
             return AirspyhfError::Error as i32;
         }
