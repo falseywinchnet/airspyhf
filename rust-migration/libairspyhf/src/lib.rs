@@ -594,10 +594,14 @@ impl AirspyHfDevice {
                 Ok(i) => i,
                 Err(_) => return,
             };
+            if iface.set_alt_setting(1).wait().is_err() {
+                return;
+            }
             let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
                 Ok(e) => e,
                 Err(_) => return,
             };
+            let _ = ep.clear_halt().wait();
             let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
             for _ in 0..RAW_BUFFER_COUNT {
                 let mut b = ep.allocate(buf_len);
