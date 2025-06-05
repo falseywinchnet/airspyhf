@@ -719,12 +719,13 @@ impl AirspyHfDevice {
 
         // ----------- main loop -----------
         loop {
-            if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
-                let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
-                if dev.stop_requested.load(Ordering::Relaxed) {
-                    break;
-                }
+            let wait = ep.wait_next_complete(Duration::from_millis(1000));
+            let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+            if dev.stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
 
+            if let Some(c) = wait {
                 if let Err(e) = c.status {
                     if e == nusb::transfer::TransferError::Stall {
                         let _ = ep.clear_halt().wait();
@@ -759,9 +760,15 @@ impl AirspyHfDevice {
 
                 ep.submit(c.buffer);
             } else {
-                break; // timeout
+                continue; // timeout
             }
         }
+        // update state on exit
+        let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+        let _ = dev.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+        dev.streaming.store(false, Ordering::SeqCst);
+        dev.stop_requested.store(false, Ordering::SeqCst);
+        dev.stream_thread_id = None;
         // iface_clone drops here → interface released when both clones gone
     });
 
