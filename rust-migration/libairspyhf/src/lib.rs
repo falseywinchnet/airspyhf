@@ -735,25 +735,23 @@ impl AirspyHfDevice {
             }
             // Check for samplerate update request
             if dev.samplerate_change_requested.swap(false, Ordering::SeqCst) {
-                break;
-                //let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
-                //let new_rate = dev.supported_samplerates[idx];
-                //let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
+                let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
+                let new_rate = dev.supported_samplerates[idx];
+                let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
                 
                 // Update internal state
-                //{
-                  //  let _g = dev.param_lock.lock().unwrap();
-                 //   dev.current_samplerate = new_rate;
-                  //  dev.is_low_if = new_arch != 0;
-                  //  dev.clear_halt_ep(0x81);
+                {
+                   let _g = dev.param_lock.lock().unwrap();
+                   dev.current_samplerate = new_rate;
+                   dev.is_low_if = new_arch != 0;
                     // Optional: resize buffer if needed
-                   // if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
-                   //     dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
-                   // }
-                //}
+                   if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
+                        dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
+                   }
+                }
             
                 // Optionally re-issue any filter gain or IQ correction updates
-                //let _ = dev.fetch_filter_gain();
+                let _ = dev.fetch_filter_gain();
             }
             if let Some(c) = wait {
                 if let Err(e) = c.status {
@@ -789,6 +787,8 @@ impl AirspyHfDevice {
                 }
 
                 ep.submit(c.buffer);
+                dev.clear_halt_ep(0x81);
+
             } else {
                 continue; // timeout
             }
@@ -796,6 +796,7 @@ impl AirspyHfDevice {
         // update state on exit
         let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
         let _ = dev.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+
         dev.streaming.store(false, Ordering::SeqCst);
         dev.stop_requested.store(false, Ordering::SeqCst);
         dev.stream_thread_id = None;
@@ -1136,36 +1137,86 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     }
     let d = &mut *dev;
 
+    // 1) find requested rate index
     let idx = match d.supported_samplerates.iter().position(|&r| r == samplerate) {
         Some(i) => i,
         None => return AirspyhfError::Error as i32,
     };
 
-    if d.streaming.load(Ordering::SeqCst) {
-        // Issue samplerate change while streaming
-        if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
-            return AirspyhfError::Error as i32;
-        }
-        d.samplerate_change_requested.store(true, Ordering::SeqCst);
-        d.new_samplerate_index.store(idx, Ordering::SeqCst);
-    } else {
-        // If not streaming, apply immediately
-        if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
-            return AirspyhfError::Error as i32;
-        }
-        {
-            let _g = d.param_lock.lock().unwrap();
-            d.current_samplerate = d.supported_samplerates[idx];
-            d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
-        }
-        d.clear_halt_ep(0x81);
+    // Remember whether we were streaming before
+    let was_streaming = d.streaming.load(Ordering::SeqCst);
+
+    // 2) Stop firmware streaming if it was running, because we will reset
+    //    (Upon reset, the device will automatically drop its streaming state,
+    //     so we just clear our flag and re-start after reset.)
+    if was_streaming {
+        // Tell firmware to stop streaming (so it’s in a known state).
+        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+        // Mark our Rust‐side streaming=false; we’ll restart after reset.
+        d.streaming.store(false, Ordering::SeqCst);
     }
 
+    // 3) Issue the SET_SAMPLERATE vendor control (firmware stores new rate)
+    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
+        // If that fails, we’re in a bad state
+        return AirspyhfError::Error as i32;
+    }
+
+    // 4) Now force a USB reset on the entire device
+    {
+        // Grab a clone of the Device handle, then call reset()
+        let handle_clone = {
+            let guard = d.handle.lock().unwrap();
+            guard.clone()
+        };
+        // Reset the device – this re-enumerates it
+        if handle_clone.reset().wait().is_err() {
+            // If reset fails, we can’t continue
+            return AirspyhfError::Error as i32;
+        }
+    }
+
+    // 5) After reset, the OS re-enumerates. We must re-open/claim interface 0.
+    //    (Re-building our `d.handle` might not be necessary because nusb's Device
+    //     wrapper stays valid across reset(). We just need to re-claim the interface.)
+    {
+        let mut iface_guard = d.interface.lock().unwrap();
+        *iface_guard = None; // drop any old claim
+
+        // Now re-claim interface 0 on the same handle
+        let new_iface = d
+            .handle
+            .lock()
+            .unwrap()
+            .claim_interface(0)
+            .wait()
+            .map_err(|_| AirspyhfError::Error as std::io::Error)
+            .unwrap();
+        *iface_guard = Some(new_iface);
+    }
+
+    // 6) Update our Rust‐side state (current_samplerate, is_low_if, filter_gain, etc.)
+    {
+        let _g = d.param_lock.lock().unwrap();
+        d.current_samplerate = d.supported_samplerates[idx];
+        d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+    }
     if d.fetch_filter_gain().is_err() {
         d.filter_gain = 1.0;
     }
 
-    airspyhf_set_freq_double(dev, d.freq_hz)
+    // 7) Re-set frequency (so that any IF shift logic is recalculated)
+    let _ = airspyhf_set_freq_double(dev, d.freq_hz);
+
+    // 8) If we were streaming before, restart streaming now that the device is reset
+    if was_streaming {
+        // In start_streaming(), we re-set altsetting=1 and re-queue bulk‐in transfers.
+        if d.start_streaming().is_err() {
+            return AirspyhfError::Error as i32;
+        }
+    }
+
+    AirspyhfError::Success as i32
 }
 
 
