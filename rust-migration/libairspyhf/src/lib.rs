@@ -735,24 +735,25 @@ impl AirspyHfDevice {
             }
             // Check for samplerate update request
             if dev.samplerate_change_requested.swap(false, Ordering::SeqCst) {
-                let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
-                let new_rate = dev.supported_samplerates[idx];
-                let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
+                break;
+                //let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
+                //let new_rate = dev.supported_samplerates[idx];
+                //let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
                 
                 // Update internal state
-                {
-                    let _g = dev.param_lock.lock().unwrap();
-                    dev.current_samplerate = new_rate;
-                    dev.is_low_if = new_arch != 0;
-                    dev.clear_halt_ep(0x81);
+                //{
+                  //  let _g = dev.param_lock.lock().unwrap();
+                 //   dev.current_samplerate = new_rate;
+                  //  dev.is_low_if = new_arch != 0;
+                  //  dev.clear_halt_ep(0x81);
                     // Optional: resize buffer if needed
-                    if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
-                        dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
-                    }
-                }
+                   // if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
+                   //     dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
+                   // }
+                //}
             
                 // Optionally re-issue any filter gain or IQ correction updates
-                let _ = dev.fetch_filter_gain();
+                //let _ = dev.fetch_filter_gain();
             }
             if let Some(c) = wait {
                 if let Err(e) = c.status {
