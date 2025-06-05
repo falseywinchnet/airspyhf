@@ -348,7 +348,7 @@ impl AirspyHfDevice {
         Ok(dev)
     }
 
-    fn vendor_out(&self,
+   fn vendor_out(&self,
               request: u8,
               value:   u16,
               index:   u16,
@@ -356,22 +356,19 @@ impl AirspyHfDevice {
 
     #[cfg(target_os = "windows")]
     {
-        // ----- Windows: make sure we have interface 0 claimed -----
-        let iface = {
-            let mut guard = self.interface.lock().unwrap();
-            if guard.is_none() {
-                let claimed = self.handle
-                    .lock().unwrap()
-                    .claim_interface(0)
-                    .wait()
-                    .map_err(io::Error::other)?;
-                *guard = Some(claimed);
-            }
-            // safe: just ensured it exists
-            guard.as_ref().unwrap()
-        };
+        // Make sure interface 0 is claimed and kept inside the mutex scope
+        let mut guard = self.interface.lock().unwrap();
+        if guard.is_none() {
+            let claimed = self.handle
+                .lock().unwrap()
+                .claim_interface(0)
+                .wait()
+                .map_err(io::Error::other)?;
+            *guard = Some(claimed);
+        }
 
-        iface.control_out(
+        guard.as_ref().unwrap()                // still inside the lock
+            .control_out(
                 ControlOut {
                     control_type: ControlType::Vendor,
                     recipient:    Recipient::Device,
@@ -414,21 +411,19 @@ impl AirspyHfDevice {
 
     #[cfg(target_os = "windows")]
     {
-        // ----- Windows: make sure we have interface 0 claimed -----
-        let iface = {
-            let mut guard = self.interface.lock().unwrap();
-            if guard.is_none() {
-                let claimed = self.handle
-                    .lock().unwrap()
-                    .claim_interface(0)
-                    .wait()
-                    .map_err(io::Error::other)?;
-                *guard = Some(claimed);
-            }
-            guard.as_ref().unwrap()
-        };
+        // Ensure interface 0 is claimed, stay in lock while issuing transfer
+        let mut guard = self.interface.lock().unwrap();
+        if guard.is_none() {
+            let claimed = self.handle
+                .lock().unwrap()
+                .claim_interface(0)
+                .wait()
+                .map_err(io::Error::other)?;
+            *guard = Some(claimed);
+        }
 
-        let data = iface.control_in(
+        let data = guard.as_ref().unwrap()
+            .control_in(
                 ControlIn {
                     control_type: ControlType::Vendor,
                     recipient:    Recipient::Device,
@@ -469,6 +464,7 @@ impl AirspyHfDevice {
         Ok(len)
     }
 }
+
 
 
     fn read_flash_config(&mut self) -> io::Result<()> {
