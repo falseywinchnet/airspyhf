@@ -24,7 +24,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 use std::ffi::c_void;
 use std::io::{self, ErrorKind};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Mutex,
 };
 
@@ -120,6 +120,8 @@ pub struct AirspyHfDevice {
     pub(crate) interface: Mutex<Option<Interface>>,
     pub(crate) streaming: AtomicBool,
     pub(crate) stop_requested: AtomicBool,
+    pub(crate) samplerate_change_requested: AtomicBool,
+    pub(crate) new_samplerate_index: AtomicUsize,
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
     pub(crate) iq_balancer: *mut IqBalancer,
@@ -236,6 +238,8 @@ impl AirspyHfDevice {
                                 interface: Mutex::new(None),
                                 streaming: AtomicBool::new(false),
                                 stop_requested: AtomicBool::new(false),
+                                samplerate_change_requested: AtomicBool,
+                                new_samplerate_index: AtomicUsize,
                                 is_low_if: false,
                                 enable_dsp: 1,
                                 iq_balancer: bal,
