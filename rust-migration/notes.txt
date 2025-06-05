@@ -43,3 +43,7 @@
 
 * Cross-platform builds: added example config for Windows
 * Initial exploration of formal verification tools (Prusti, Creusot)
+
+* Thread safety improvements: Atomic stop/streaming flags, parameter mutex, thread id to avoid join deadlocks.
+* convert_samples now locks around IQ balancing and frequency shifting to avoid races.
+* Added sanity tests covering restart and closing while streaming.
