@@ -345,86 +345,41 @@ impl AirspyHfDevice {
 
     fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
         let handle = self.handle.lock().unwrap().clone();
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-        {
-            handle
-                .control_out(
-                    ControlOut {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Device,
-                        request,
-                        value,
-                        index,
-                        data,
-                    },
-                    Duration::from_millis(CTRL_TIMEOUT_MS),
-                )
-                .wait()
-                .map_err(io::Error::other)
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let iface = handle.claim_interface(0).wait().map_err(io::Error::other)?;
-            iface
-                .control_out(
-                    ControlOut {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Device,
-                        request,
-                        value,
-                        index,
-                        data,
-                    },
-                    Duration::from_millis(CTRL_TIMEOUT_MS),
-                )
-                .wait()
-                .map_err(io::Error::other)
-        }
+        handle
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    data,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)
     }
 
     fn vendor_in(&self, request: u8, value: u16, index: u16, buf: &mut [u8]) -> io::Result<usize> {
         let handle = self.handle.lock().unwrap().clone();
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-        {
-            let data = handle
-                .control_in(
-                    ControlIn {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Device,
-                        request,
-                        value,
-                        index,
-                        length: buf.len() as u16,
-                    },
-                    Duration::from_millis(CTRL_TIMEOUT_MS),
-                )
-                .wait()
-                .map_err(io::Error::other)?;
-            let len = std::cmp::min(data.len(), buf.len());
-            buf[..len].copy_from_slice(&data[..len]);
-            Ok(len)
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let iface = handle.claim_interface(0).wait().map_err(io::Error::other)?;
-            let data = iface
-                .control_in(
-                    ControlIn {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Device,
-                        request,
-                        value,
-                        index,
-                        length: buf.len() as u16,
-                    },
-                    Duration::from_millis(CTRL_TIMEOUT_MS),
-                )
-                .wait()
-                .map_err(io::Error::other)?;
-            let len = std::cmp::min(data.len(), buf.len());
-            buf[..len].copy_from_slice(&data[..len]);
-            Ok(len)
-        }
+        let data = handle
+            .control_in(
+                ControlIn {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    length: buf.len() as u16,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)?;
+        let len = std::cmp::min(data.len(), buf.len());
+        buf[..len].copy_from_slice(&data[..len]);
+        Ok(len)
     }
 
     fn read_flash_config(&mut self) -> io::Result<()> {
@@ -520,35 +475,23 @@ impl AirspyHfDevice {
     }
 
     fn clear_halt_ep(&self, ep: u8) {
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-        {
-            let handle = self.handle.lock().unwrap().clone();
-            let _ = handle
-                .control_out(
-                    ControlOut {
-                        control_type: ControlType::Standard,
-                        recipient: Recipient::Endpoint,
-                        request: 1, // CLEAR_FEATURE
-                        value: 0,   // ENDPOINT_HALT
-                        index: ep as u16,
-                        data: &[],
-                    },
-                    Duration::from_millis(CTRL_TIMEOUT_MS),
-                )
-                .wait();
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let handle = match self.handle.lock() {
-                Ok(h) => h.clone(),
-                Err(_) => return,
-            };
-            if let Ok(iface) = handle.claim_interface(0).wait() {
-                if let Ok(mut ep) = iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(ep) {
-                    let _ = ep.clear_halt().wait();
-                }
-            }
-        }
+        let handle = match self.handle.lock() {
+            Ok(h) => h.clone(),
+            Err(_) => return,
+        };
+        let _ = handle
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Standard,
+                    recipient: Recipient::Endpoint,
+                    request: 1, // CLEAR_FEATURE
+                    value: 0,   // ENDPOINT_HALT
+                    index: ep as u16,
+                    data: &[],
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait();
     }
 
     fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
