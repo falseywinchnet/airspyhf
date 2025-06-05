@@ -1120,12 +1120,15 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     } else {
         return AirspyhfError::Error as i32;
     };
-    d.clear_halt_ep(0x81);
     if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[])
         .is_err()
     {
+        if was_streaming {
+            let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
+        }
         return AirspyhfError::Error as i32;
     }
+    d.clear_halt_ep(0x81);
     {
         let _g = d.param_lock.lock().unwrap();
         d.current_samplerate = d.supported_samplerates[idx];
@@ -1144,6 +1147,7 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     }
     airspyhf_set_freq_double(dev, d.freq_hz);
     if was_streaming {
+        d.clear_halt_ep(0x81);
         let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
     }
     AirspyhfError::Success as i32
