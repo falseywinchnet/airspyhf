@@ -1101,29 +1101,31 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     dev: AirspyhfDeviceHandle,
     samplerate: u32,
 ) -> i32 {
+    // ---------- pre-flight ----------
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
 
+    // locate the requested rate inside the table the firmware gave us
     let idx = match d.supported_samplerates.iter().position(|&r| r == samplerate) {
         Some(i) => i,
-        None => return AirspyhfError::Error as i32,
+        None     => return AirspyhfError::Error as i32,
     };
 
+    // ---------- bring streaming to a full stop ----------
     let was_streaming = d.streaming.load(Ordering::SeqCst);
     if was_streaming {
-        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-        d.streaming.store(false, Ordering::SeqCst);
+        d.stop_streaming();        // joins the thread & releases all old USB pipes
     }
 
+    // ---------- ask the firmware to switch rate ----------
     if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
         return AirspyhfError::Error as i32;
     }
 
-    // 1) Force a USB reset on the entire device
+    // ---------- force a USB-core reset so new pipes appear ----------
     {
-        // Clone the Device handle and call reset().wait()
         let handle_clone = {
             let guard = d.handle.lock().unwrap();
             guard.clone()
@@ -1133,44 +1135,42 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         }
     }
 
-    // 2) Re‐claim interface 0 (must produce an io::Error, not AirspyhfError)
+    // ---------- re-claim interface 0 (all old Interface objects are invalid) ----------
     {
         let mut iface_guard = d.interface.lock().unwrap();
-        *iface_guard = None;
+        *iface_guard = None;   // drop stale claim (if any)
 
-        // Try to claim interface 0 again; if it fails, return Error via map_err
-        let new_iface = d
+        match d
             .handle
             .lock()
             .unwrap()
             .claim_interface(0)
             .wait()
-            .map_err(|_| {
-                io::Error::new(ErrorKind::Other, "claim interface failed after reset")
-            });
-
-        let iface = match new_iface {
-            Ok(i) => i,
-            Err(_) => return AirspyhfError::Error as i32,
-        };
-
-        *iface_guard = Some(iface);
+            .map_err(|_| io::Error::other("claim interface failed"))
+        {
+            Ok(iface) => *iface_guard = Some(iface),
+            Err(_)    => return AirspyhfError::Error as i32,
+        }
     }
 
-    // 3) Update samplerate, IF architecture, filter gain, etc.
+    // ---------- update cached state while nothing is streaming ----------
     {
         let _g = d.param_lock.lock().unwrap();
         d.current_samplerate = d.supported_samplerates[idx];
-        d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+        d.is_low_if = d
+            .samplerate_architectures
+            .get(idx)
+            .copied()
+            .unwrap_or(0) != 0;
     }
+
+    // gain & LO depend on the new sample-rate
     let _ = d.fetch_filter_gain();
     let _ = airspyhf_set_freq_double(dev, d.freq_hz);
 
-    // 4) If we were streaming, start streaming again
-    if was_streaming {
-        if d.start_streaming().is_err() {
-            return AirspyhfError::Error as i32;
-        }
+    // ---------- resume streaming if it was running before ----------
+    if was_streaming && d.start_streaming().is_err() {
+        return AirspyhfError::Error as i32;
     }
 
     AirspyhfError::Success as i32
