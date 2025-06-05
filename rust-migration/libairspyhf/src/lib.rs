@@ -177,6 +177,8 @@ impl AirspyHfDevice {
            interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
+            samplerate_change_requested: AtomicBool,
+            new_samplerate_index: AtomicUsize,
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -721,10 +723,31 @@ impl AirspyHfDevice {
         loop {
             let wait = ep.wait_next_complete(Duration::from_millis(1000));
             let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+           
             if dev.stop_requested.load(Ordering::Relaxed) {
                 break;
             }
-
+            // Check for samplerate update request
+            if dev.samplerate_change_requested.swap(false, Ordering::SeqCst) {
+                let idx = dev.new_samplerate_index.load(Ordering::SeqCst);
+                let new_rate = dev.supported_samplerates[idx];
+                let new_arch = dev.samplerate_architectures.get(idx).copied().unwrap_or(0);
+                
+                // Update internal state
+                {
+                    let _g = dev.param_lock.lock().unwrap();
+                    dev.current_samplerate = new_rate;
+                    dev.is_low_if = new_arch != 0;
+                    dev.clear_halt_ep(0x81);
+                    // Optional: resize buffer if needed
+                    if dev.output_buffer.len() < SAMPLES_TO_TRANSFER as usize {
+                        dev.output_buffer.resize(SAMPLES_TO_TRANSFER as usize, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
+                    }
+                }
+            
+                // Optionally re-issue any filter gain or IQ correction updates
+                let _ = dev.fetch_filter_gain();
+            }
             if let Some(c) = wait {
                 if let Err(e) = c.status {
                     if e == nusb::transfer::TransferError::Stall {
@@ -1105,53 +1128,39 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
-    let was_streaming = d.streaming.load(Ordering::SeqCst);
-    if was_streaming {
-        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-    }
-    let idx = if let Some(pos) = d
-        .supported_samplerates
-        .iter()
-        .position(|&r| r == samplerate)
-    {
-        pos
-    } else if (samplerate as usize) < d.supported_samplerates.len() {
-        samplerate as usize
-    } else {
-        return AirspyhfError::Error as i32;
+
+    let idx = match d.supported_samplerates.iter().position(|&r| r == samplerate) {
+        Some(i) => i,
+        None => return AirspyhfError::Error as i32,
     };
-    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[])
-        .is_err()
-    {
-        if was_streaming {
-            let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-        }
-        return AirspyhfError::Error as i32;
-    }
-    d.clear_halt_ep(0x81);
-    {
-        let _g = d.param_lock.lock().unwrap();
-        d.current_samplerate = d.supported_samplerates[idx];
-        d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
-    }
-    if !d.is_low_if && d.freq_khz < MIN_ZERO_IF_LO {
-        if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &MIN_ZERO_IF_LO.to_be_bytes())
-            .is_err()
-        {
+
+    if d.streaming.load(Ordering::SeqCst) {
+        // Issue samplerate change while streaming
+        if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
             return AirspyhfError::Error as i32;
         }
-        d.freq_khz = MIN_ZERO_IF_LO;
+        d.samplerate_change_requested.store(true, Ordering::SeqCst);
+        d.new_samplerate_index.store(idx, Ordering::SeqCst);
+    } else {
+        // If not streaming, apply immediately
+        if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
+            return AirspyhfError::Error as i32;
+        }
+        {
+            let _g = d.param_lock.lock().unwrap();
+            d.current_samplerate = d.supported_samplerates[idx];
+            d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+        }
+        d.clear_halt_ep(0x81);
     }
+
     if d.fetch_filter_gain().is_err() {
         d.filter_gain = 1.0;
     }
-    airspyhf_set_freq_double(dev, d.freq_hz);
-    //if was_streaming {
-       // d.clear_halt_ep(0x81);
-      //  let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-    //}
-    AirspyhfError::Success as i32
+
+    airspyhf_set_freq_double(dev, d.freq_hz)
 }
+
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_set_freq(dev: AirspyhfDeviceHandle, freq_hz: u32) -> i32 {
