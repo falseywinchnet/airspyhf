@@ -674,41 +674,42 @@ impl AirspyHfDevice {
     // Tell the firmware to enter streaming mode
     self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
 
-    // ----- Get an owned Interface we can move into the thread -----
-    let iface_owned = {
+    // ---------- ensure interface 0 is claimed ----------
+    let iface_clone = {
         let mut guard = self.interface.lock().unwrap();
-        if let Some(i) = guard.take() {
-            i                          // we already claimed it earlier
-        } else {
-            // fall-back: claim it now
-            self.handle
+        if guard.is_none() {
+            let iface = self.handle
                 .lock().unwrap()
                 .claim_interface(0)
                 .wait()
-                .map_err(io::Error::other)?
+                .map_err(io::Error::other)?;
+            *guard = Some(iface);
         }
+        // clone *while the lock is held* so both sides share the same claim
+        guard.as_ref().unwrap().clone()
     };
 
     // Raw pointer for use inside the thread
     let dev_ptr = self as *mut AirspyHfDevice as usize;
 
-    // Spawn the streaming thread
+    // ---------- spawn streaming thread ----------
     let thread = std::thread::spawn(move || {
-        let iface = iface_owned;   // moved into the thread
+        // we own our clone here
+        let iface = iface_clone;
 
-        // Select alt-setting 1 (bulk-in endpoint active)
+        // Alt-setting 1 exposes the bulk-IN endpoint
         if iface.set_alt_setting(1).wait().is_err() {
             return;
         }
 
-        // Bulk-in endpoint 0x81
+        // Bulk-IN endpoint 0x81
         let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
             Ok(e)  => e,
             Err(_) => return,
         };
         let _ = ep.clear_halt().wait();
 
-        // Pre-queue a few buffers
+        // Pre-queue buffers
         let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
         for _ in 0..RAW_BUFFER_COUNT {
             let mut b = ep.allocate(buf_len);
@@ -716,11 +717,10 @@ impl AirspyHfDevice {
             ep.submit(b);
         }
 
-        // ------------ Main read loop ------------
+        // ----------- main loop -----------
         loop {
             if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
                 let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
-
                 if dev.stop_requested.load(Ordering::Relaxed) {
                     break;
                 }
@@ -730,12 +730,11 @@ impl AirspyHfDevice {
                         let _ = ep.clear_halt().wait();
                         ep.submit(c.buffer);
                         continue;
-                    } else {
-                        break;
                     }
+                    break;
                 }
 
-                // Convert samples
+                // convert IQ and fire callback
                 let raw = unsafe {
                     std::slice::from_raw_parts(
                         c.buffer.as_ptr() as *const i16,
@@ -744,7 +743,6 @@ impl AirspyHfDevice {
                 };
                 let n = dev.convert_samples(raw);
 
-                // Callback
                 if let Some(cb) = dev.callback {
                     let mut xfer = AirspyhfTransfer {
                         device: dev_ptr as *mut _,
@@ -759,13 +757,12 @@ impl AirspyHfDevice {
                     }
                 }
 
-                // Re-submit the buffer
                 ep.submit(c.buffer);
             } else {
                 break; // timeout
             }
         }
-        // When the thread ends, iface is dropped and the interface is released.
+        // iface_clone drops here → interface released when both clones gone
     });
 
     self.thread = Some(thread);
