@@ -333,7 +333,7 @@ impl IqBalancer {
                         for i in EDGE_BINS_TO_SKIP..=FFTBINS - EDGE_BINS_TO_SKIP {
                             let p = fft_buf[i].re * fft_buf[i].re + fft_buf[i].im * fft_buf[i].im;
                             self.boost[i] += p;
-                            let idx = (FFTBINS as isize - i as isize - optimal_bin as isize).abs()
+                            let idx = (FFTBINS as isize - i as isize - optimal_bin as isize).unsigned_abs()
                                 as usize;
                             self.integrated_image_power += p as f64 * boost_win[idx] as f64;
                         }
@@ -410,7 +410,7 @@ impl IqBalancer {
                 let boost_factor = self.boost[FFTBINS - i] / (self.boost[i] + EPSILON);
                 let w = distance_weights[i]
                     * boost_factor
-                    * boost_window[(self.optimal_bin as isize - i as isize).abs() as usize];
+                    * boost_window[(self.optimal_bin as isize - i as isize).unsigned_abs() as usize];
                 acc.re += ccorr[i].re * w;
                 acc.im += ccorr[i].im * w;
             }
@@ -418,7 +418,7 @@ impl IqBalancer {
                 let boost_factor = self.boost[FFTBINS - i] / (self.boost[i] + EPSILON);
                 let w = distance_weights[i]
                     * boost_factor
-                    * boost_window[(self.optimal_bin as isize - i as isize).abs() as usize];
+                    * boost_window[(self.optimal_bin as isize - i as isize).unsigned_abs() as usize];
                 acc.re += ccorr[i].re * w;
                 acc.im += ccorr[i].im * w;
             }
