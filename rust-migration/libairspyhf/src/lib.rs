@@ -1146,10 +1146,10 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         d.filter_gain = 1.0;
     }
     airspyhf_set_freq_double(dev, d.freq_hz);
-    if was_streaming {
-        d.clear_halt_ep(0x81);
-        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-    }
+    //if was_streaming {
+       // d.clear_halt_ep(0x81);
+      //  let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
+    //}
     AirspyhfError::Success as i32
 }
 
