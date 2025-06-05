@@ -23,7 +23,10 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 use std::ffi::c_void;
 use std::io::{self, ErrorKind};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
 mod iq_balancer;
 use iq_balancer::IqBalancer;
@@ -113,8 +116,8 @@ pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut AirspyhfTran
 pub struct AirspyHfDevice {
     /// Underlying USB handle.  Wrapped in a mutex for thread safety.
     pub(crate) handle: Mutex<Device>,
-    pub(crate) streaming: bool,
-    pub(crate) stop_requested: bool,
+    pub(crate) streaming: AtomicBool,
+    pub(crate) stop_requested: AtomicBool,
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
     pub(crate) iq_balancer: *mut IqBalancer,
@@ -142,6 +145,8 @@ pub struct AirspyHfDevice {
     pub(crate) callback: AirspyhfSampleBlockCbFn,
     pub(crate) ctx: *mut c_void,
     pub(crate) thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) stream_thread_id: Option<std::thread::ThreadId>,
+    pub(crate) param_lock: Mutex<()>,
     pub(crate) output_buffer: Vec<AirspyhfComplexFloat>,
     pub(crate) dropped_buffers: u64,
 }
@@ -167,8 +172,8 @@ impl AirspyHfDevice {
         let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
-            streaming: false,
-            stop_requested: false,
+            streaming: AtomicBool::new(false),
+            stop_requested: AtomicBool::new(false),
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -198,6 +203,8 @@ impl AirspyHfDevice {
             callback: None,
             ctx: std::ptr::null_mut(),
             thread: None,
+            stream_thread_id: None,
+            param_lock: Mutex::new(()),
             output_buffer: Vec::new(),
             dropped_buffers: 0,
         };
@@ -221,8 +228,8 @@ impl AirspyHfDevice {
                             let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
                             let mut dev = AirspyHfDevice {
                                 handle: Mutex::new(dev),
-                                streaming: false,
-                                stop_requested: false,
+                                streaming: AtomicBool::new(false),
+                                stop_requested: AtomicBool::new(false),
                                 is_low_if: false,
                                 enable_dsp: 1,
                                 iq_balancer: bal,
@@ -252,6 +259,8 @@ impl AirspyHfDevice {
                                 callback: None,
                                 ctx: std::ptr::null_mut(),
                                 thread: None,
+                                stream_thread_id: None,
+                                param_lock: Mutex::new(()),
                                 output_buffer: Vec::new(),
                                 dropped_buffers: 0,
                             };
@@ -291,8 +300,8 @@ impl AirspyHfDevice {
         let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
-            streaming: false,
-            stop_requested: false,
+            streaming: AtomicBool::new(false),
+            stop_requested: AtomicBool::new(false),
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -322,6 +331,8 @@ impl AirspyHfDevice {
             callback: None,
             ctx: std::ptr::null_mut(),
             thread: None,
+            stream_thread_id: None,
+            param_lock: Mutex::new(()),
             output_buffer: Vec::new(),
             dropped_buffers: 0,
         };
@@ -538,38 +549,42 @@ impl AirspyHfDevice {
             self.output_buffer[i].re = re * conv_gain;
             self.output_buffer[i].im = im * conv_gain;
         }
-        if self.enable_dsp != 0 {
-            if !self.is_low_if {
-                unsafe {
-                    iq_balancer::iq_balancer_process(
-                        self.iq_balancer,
-                        self.output_buffer.as_mut_ptr(),
-                        count as i32,
-                    );
+        {
+            let _g = self.param_lock.lock().unwrap();
+            if self.enable_dsp != 0 {
+                if !self.is_low_if {
+                    unsafe {
+                        iq_balancer::iq_balancer_process(
+                            self.iq_balancer,
+                            self.output_buffer.as_mut_ptr(),
+                            count as i32,
+                        );
+                    }
                 }
-            }
-            if self.freq_shift != 0.0 {
-                let angle =
-                    2.0 * std::f64::consts::PI * self.freq_shift / self.current_samplerate as f64;
-                let rot = AirspyhfComplexFloat {
-                    re: angle.cos() as f32,
-                    im: -(angle.sin() as f32),
-                };
-                let mut vec = self.vec;
-                for s in &mut self.output_buffer[..count] {
-                    Self::rotate_complex(&mut vec, &rot);
-                    Self::multiply_complex_complex(s, &vec);
+                if self.freq_shift != 0.0 {
+                    let angle = 2.0 * std::f64::consts::PI * self.freq_shift
+                        / self.current_samplerate as f64;
+                    let rot = AirspyhfComplexFloat {
+                        re: angle.cos() as f32,
+                        im: -(angle.sin() as f32),
+                    };
+                    let mut vec = self.vec;
+                    for s in &mut self.output_buffer[..count] {
+                        Self::rotate_complex(&mut vec, &rot);
+                        Self::multiply_complex_complex(s, &vec);
+                    }
+                    self.vec = vec;
                 }
-                self.vec = vec;
             }
         }
         count
     }
 
     fn start_streaming(&mut self) -> io::Result<()> {
-        if self.streaming {
+        if self.streaming.swap(true, Ordering::SeqCst) {
             return Err(io::Error::new(ErrorKind::Other, "already streaming"));
         }
+        self.stop_requested.store(false, Ordering::SeqCst);
         self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
         let handle = self.handle.lock().unwrap().clone();
         let dev_ptr = self as *mut AirspyHfDevice as usize;
@@ -592,7 +607,7 @@ impl AirspyHfDevice {
             loop {
                 if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
                     let d = unsafe { &mut *dev_ptr };
-                    if d.stop_requested {
+                    if d.stop_requested.load(Ordering::Relaxed) {
                         break;
                     }
                     if c.status.is_err() {
@@ -614,7 +629,7 @@ impl AirspyHfDevice {
                             dropped_samples: d.dropped_buffers,
                         };
                         if unsafe { cb(&mut transfer as *mut _) } != 0 {
-                            d.stop_requested = true;
+                            d.stop_requested.store(true, Ordering::SeqCst);
                             break;
                         }
                     }
@@ -624,19 +639,30 @@ impl AirspyHfDevice {
                 }
             }
         });
+        let id = thread.thread().id();
         self.thread = Some(thread);
+        self.stream_thread_id = Some(id);
         let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-        self.streaming = true;
         Ok(())
     }
 
     fn stop_streaming(&mut self) {
-        self.stop_requested = true;
+        if !self.streaming.load(Ordering::SeqCst) {
+            return;
+        }
+        self.stop_requested.store(true, Ordering::SeqCst);
+        if let Some(id) = self.stream_thread_id {
+            if id == std::thread::current().id() {
+                return;
+            }
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
         let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-        self.streaming = false;
+        self.streaming.store(false, Ordering::SeqCst);
+        self.stop_requested.store(false, Ordering::SeqCst);
+        self.stream_thread_id = None;
     }
 }
 
@@ -680,7 +706,10 @@ pub unsafe extern "C" fn airspyhf_close(dev: AirspyhfDeviceHandle) -> i32 {
     if dev.is_null() {
         return AirspyhfError::Error as i32;
     }
-    let d = Box::from_raw(dev);
+    let mut d = Box::from_raw(dev);
+    if d.streaming.load(Ordering::SeqCst) {
+        d.stop_streaming();
+    }
     iq_balancer::iq_balancer_destroy(d.iq_balancer);
     // Box drops here
     AirspyhfError::Success as i32
@@ -718,6 +747,50 @@ mod tests {
         let ret = unsafe { airspyhf_open_sn(&mut handle as *mut _, 0) };
         assert_ne!(ret, AirspyhfError::Success as i32);
         assert!(handle.is_null());
+    }
+
+    #[test]
+    fn start_stop_restart() {
+        extern "C" fn cb(_t: *mut AirspyhfTransfer) -> i32 {
+            0
+        }
+        let mut handle: AirspyhfDeviceHandle = std::ptr::null_mut();
+        unsafe {
+            let _ = airspyhf_open(&mut handle as *mut _);
+        }
+        if handle.is_null() {
+            return;
+        }
+        unsafe {
+            let res = airspyhf_start(handle, Some(cb), std::ptr::null_mut());
+            if res == AirspyhfError::Success as i32 {
+                assert_eq!(1, airspyhf_is_streaming(handle));
+                assert_eq!(0, airspyhf_stop(handle));
+                assert_eq!(0, airspyhf_start(handle, Some(cb), std::ptr::null_mut()));
+                assert_eq!(1, airspyhf_is_streaming(handle));
+                let _ = airspyhf_stop(handle);
+            }
+            let _ = airspyhf_close(handle);
+        }
+    }
+
+    #[test]
+    fn close_while_streaming() {
+        extern "C" fn cb(_t: *mut AirspyhfTransfer) -> i32 {
+            0
+        }
+        let mut handle: AirspyhfDeviceHandle = std::ptr::null_mut();
+        unsafe {
+            let _ = airspyhf_open(&mut handle as *mut _);
+        }
+        if handle.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = airspyhf_start(handle, Some(cb), std::ptr::null_mut());
+            // Close without explicit stop
+            assert_eq!(0, airspyhf_close(handle));
+        }
     }
 }
 
@@ -789,7 +862,7 @@ pub unsafe extern "C" fn airspyhf_is_streaming(dev: AirspyhfDeviceHandle) -> i32
         return 0;
     }
     let d = &*(dev);
-    if d.streaming && !d.stop_requested {
+    if d.streaming.load(Ordering::SeqCst) && !d.stop_requested.load(Ordering::SeqCst) {
         1
     } else {
         0
@@ -815,7 +888,10 @@ pub unsafe extern "C" fn airspyhf_set_optimal_iq_correction_point(
         return AirspyhfError::Error as i32;
     }
     let mut_ref = &mut *dev;
-    iq_balancer::iq_balancer_set_optimal_point(mut_ref.iq_balancer, w);
+    {
+        let _g = mut_ref.param_lock.lock().unwrap();
+        iq_balancer::iq_balancer_set_optimal_point(mut_ref.iq_balancer, w);
+    }
     AirspyhfError::Success as i32
 }
 
@@ -831,7 +907,10 @@ pub unsafe extern "C" fn airspyhf_iq_balancer_configure(
         return AirspyhfError::Error as i32;
     }
     let mut_ref = &mut *dev;
-    iq_balancer::iq_balancer_configure(mut_ref.iq_balancer, b, fi, fo, ci);
+    {
+        let _g = mut_ref.param_lock.lock().unwrap();
+        iq_balancer::iq_balancer_configure(mut_ref.iq_balancer, b, fi, fo, ci);
+    }
     AirspyhfError::Success as i32
 }
 
@@ -907,8 +986,11 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     {
         return AirspyhfError::Error as i32;
     }
-    d.current_samplerate = d.supported_samplerates[idx];
-    d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+    {
+        let _g = d.param_lock.lock().unwrap();
+        d.current_samplerate = d.supported_samplerates[idx];
+        d.is_low_if = d.samplerate_architectures.get(idx).copied().unwrap_or(0) != 0;
+    }
     if !d.is_low_if && d.freq_khz < MIN_ZERO_IF_LO {
         if d.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &MIN_ZERO_IF_LO.to_be_bytes())
             .is_err()
@@ -954,18 +1036,24 @@ pub unsafe extern "C" fn airspyhf_set_freq_double(dev: AirspyhfDeviceHandle, fre
         {
             return AirspyhfError::Error as i32;
         }
-        d.freq_khz = freq_khz;
         let mut buf = [0u8; 4];
         if d.vendor_in(AIRSPYHF_GET_FREQ_DELTA, 0, 0, &mut buf).is_ok() {
             let val =
                 (((buf[3] as i8 as i32) << 16) | ((buf[2] as i32) << 8) | buf[1] as i32) as f64;
             d.freq_delta_hz = val * 1e3 / ((1u32 << buf[0]) as f64);
         }
-        iq_balancer::iq_balancer_set_optimal_point(d.iq_balancer, d.optimal_point);
+        {
+            let _g = d.param_lock.lock().unwrap();
+            d.freq_khz = freq_khz;
+            iq_balancer::iq_balancer_set_optimal_point(d.iq_balancer, d.optimal_point);
+        }
     }
 
-    d.freq_hz = freq_hz;
-    d.freq_shift = adjusted - freq_khz as f64 * 1e3 + d.freq_delta_hz;
+    {
+        let _g = d.param_lock.lock().unwrap();
+        d.freq_hz = freq_hz;
+        d.freq_shift = adjusted - freq_khz as f64 * 1e3 + d.freq_delta_hz;
+    }
     AirspyhfError::Success as i32
 }
 
@@ -1070,7 +1158,7 @@ pub unsafe extern "C" fn airspyhf_flash_configuration(_dev: AirspyhfDeviceHandle
         return AirspyhfError::Error as i32;
     }
     let d = &mut *_dev;
-    if d.streaming {
+    if d.streaming.load(Ordering::SeqCst) {
         return AirspyhfError::Error as i32;
     }
     match d.write_flash_config() {
