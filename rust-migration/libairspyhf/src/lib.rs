@@ -348,21 +348,33 @@ impl AirspyHfDevice {
         Ok(dev)
     }
 
-    fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
+    fn vendor_out(&self,
+              request: u8,
+              value:   u16,
+              index:   u16,
+              data:    &[u8]) -> io::Result<()> {
+
     #[cfg(target_os = "windows")]
     {
-        // On Windows we must issue control transfers through the interface
-        // that was claimed (and stored) when streaming started.
-        let guard = self.interface.lock().unwrap();
-        let iface = guard
-            .as_ref()
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "interface not claimed"))?;
+        // ----- Windows: make sure we have interface 0 claimed -----
+        let iface = {
+            let mut guard = self.interface.lock().unwrap();
+            if guard.is_none() {
+                let claimed = self.handle
+                    .lock().unwrap()
+                    .claim_interface(0)
+                    .wait()
+                    .map_err(io::Error::other)?;
+                *guard = Some(claimed);
+            }
+            // safe: just ensured it exists
+            guard.as_ref().unwrap()
+        };
 
-        iface
-            .control_out(
+        iface.control_out(
                 ControlOut {
                     control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
+                    recipient:    Recipient::Device,
                     request,
                     value,
                     index,
@@ -376,13 +388,11 @@ impl AirspyHfDevice {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Linux / macOS can talk to the default control pipe directly
         let handle = self.handle.lock().unwrap().clone();
-        handle
-            .control_out(
+        handle.control_out(
                 ControlOut {
                     control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
+                    recipient:    Recipient::Device,
                     request,
                     value,
                     index,
@@ -395,19 +405,33 @@ impl AirspyHfDevice {
     }
 }
 
-    fn vendor_in(&self, request: u8, value: u16, index: u16, buf: &mut [u8]) -> io::Result<usize> {
+
+    fn vendor_in(&self,
+             request: u8,
+             value:   u16,
+             index:   u16,
+             buf:     &mut [u8]) -> io::Result<usize> {
+
     #[cfg(target_os = "windows")]
     {
-        let guard = self.interface.lock().unwrap();
-        let iface = guard
-            .as_ref()
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "interface not claimed"))?;
+        // ----- Windows: make sure we have interface 0 claimed -----
+        let iface = {
+            let mut guard = self.interface.lock().unwrap();
+            if guard.is_none() {
+                let claimed = self.handle
+                    .lock().unwrap()
+                    .claim_interface(0)
+                    .wait()
+                    .map_err(io::Error::other)?;
+                *guard = Some(claimed);
+            }
+            guard.as_ref().unwrap()
+        };
 
-        let data = iface
-            .control_in(
+        let data = iface.control_in(
                 ControlIn {
                     control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
+                    recipient:    Recipient::Device,
                     request,
                     value,
                     index,
@@ -418,7 +442,7 @@ impl AirspyHfDevice {
             .wait()
             .map_err(io::Error::other)?;
 
-        let len = std::cmp::min(data.len(), buf.len());
+        let len = data.len().min(buf.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok(len)
     }
@@ -426,11 +450,10 @@ impl AirspyHfDevice {
     #[cfg(not(target_os = "windows"))]
     {
         let handle = self.handle.lock().unwrap().clone();
-        let data = handle
-            .control_in(
+        let data = handle.control_in(
                 ControlIn {
                     control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
+                    recipient:    Recipient::Device,
                     request,
                     value,
                     index,
@@ -441,11 +464,12 @@ impl AirspyHfDevice {
             .wait()
             .map_err(io::Error::other)?;
 
-        let len = std::cmp::min(data.len(), buf.len());
+        let len = data.len().min(buf.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok(len)
     }
 }
+
 
     fn read_flash_config(&mut self) -> io::Result<()> {
         let mut buf = [0u8; 256];
@@ -645,80 +669,117 @@ impl AirspyHfDevice {
     }
 
     fn start_streaming(&mut self) -> io::Result<()> {
-        if self.streaming.swap(true, Ordering::SeqCst) {
-            return Err(io::Error::new(ErrorKind::Other, "already streaming"));
+    // Already running?
+    if self.streaming.swap(true, Ordering::SeqCst) {
+        return Err(io::Error::new(ErrorKind::Other, "already streaming"));
+    }
+    self.stop_requested.store(false, Ordering::SeqCst);
+
+    // Tell the firmware to enter streaming mode
+    self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
+
+    // ----- Get an owned Interface we can move into the thread -----
+    let iface_owned = {
+        let mut guard = self.interface.lock().unwrap();
+        if let Some(i) = guard.take() {
+            i                          // we already claimed it earlier
+        } else {
+            // fall-back: claim it now
+            self.handle
+                .lock().unwrap()
+                .claim_interface(0)
+                .wait()
+                .map_err(io::Error::other)?
         }
-        self.stop_requested.store(false, Ordering::SeqCst);
-        self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
-        let handle = self.handle.lock().unwrap().clone();
-        let dev_ptr = self as *mut AirspyHfDevice as usize;
-        let thread = std::thread::spawn(move || {
-            let dev_ptr = dev_ptr as *mut AirspyHfDevice;
-            let iface = match handle.claim_interface(0).wait() {
-                Ok(i) => i,
-                Err(_) => return,
-            };
-            if iface.set_alt_setting(1).wait().is_err() {
-                return;
-            }
-            let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
-                Ok(e) => e,
-                Err(_) => return,
-            };
-            let _ = ep.clear_halt().wait();
-            let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
-            for _ in 0..RAW_BUFFER_COUNT {
-                let mut b = ep.allocate(buf_len);
-                b.set_requested_len(buf_len);
-                ep.submit(b);
-            }
-            loop {
-                if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
-                    let d = unsafe { &mut *dev_ptr };
-                    if d.stop_requested.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if let Err(e) = c.status {
-                        if e == nusb::transfer::TransferError::Stall {
-                            let _ = ep.clear_halt().wait();
-                            ep.submit(c.buffer);
-                            continue;
-                        } else {
-                            break;
-                        }
-                    }
-                    let slice = unsafe {
-                        std::slice::from_raw_parts(
-                            c.buffer.as_ptr() as *const i16,
-                            c.buffer.len() / 2,
-                        )
-                    };
-                    let count = d.convert_samples(slice);
-                    if let Some(cb) = d.callback {
-                        let mut transfer = AirspyhfTransfer {
-                            device: dev_ptr,
-                            ctx: d.ctx,
-                            samples: d.output_buffer.as_mut_ptr(),
-                            sample_count: count as i32,
-                            dropped_samples: d.dropped_buffers,
-                        };
-                        if unsafe { cb(&mut transfer as *mut _) } != 0 {
-                            d.stop_requested.store(true, Ordering::SeqCst);
-                            break;
-                        }
-                    }
-                    ep.submit(c.buffer);
-                } else {
+    };
+
+    // Raw pointer for use inside the thread
+    let dev_ptr = self as *mut AirspyHfDevice as usize;
+
+    // Spawn the streaming thread
+    let thread = std::thread::spawn(move || {
+        let iface = iface_owned;   // moved into the thread
+
+        // Select alt-setting 1 (bulk-in endpoint active)
+        if iface.set_alt_setting(1).wait().is_err() {
+            return;
+        }
+
+        // Bulk-in endpoint 0x81
+        let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
+            Ok(e)  => e,
+            Err(_) => return,
+        };
+        let _ = ep.clear_halt().wait();
+
+        // Pre-queue a few buffers
+        let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
+        for _ in 0..RAW_BUFFER_COUNT {
+            let mut b = ep.allocate(buf_len);
+            b.set_requested_len(buf_len);
+            ep.submit(b);
+        }
+
+        // ------------ Main read loop ------------
+        loop {
+            if let Some(c) = ep.wait_next_complete(Duration::from_millis(1000)) {
+                let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+
+                if dev.stop_requested.load(Ordering::Relaxed) {
                     break;
                 }
+
+                if let Err(e) = c.status {
+                    if e == nusb::transfer::TransferError::Stall {
+                        let _ = ep.clear_halt().wait();
+                        ep.submit(c.buffer);
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Convert samples
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        c.buffer.as_ptr() as *const i16,
+                        c.buffer.len() / 2,
+                    )
+                };
+                let n = dev.convert_samples(raw);
+
+                // Callback
+                if let Some(cb) = dev.callback {
+                    let mut xfer = AirspyhfTransfer {
+                        device: dev_ptr as *mut _,
+                        ctx: dev.ctx,
+                        samples: dev.output_buffer.as_mut_ptr(),
+                        sample_count: n as i32,
+                        dropped_samples: dev.dropped_buffers,
+                    };
+                    if unsafe { cb(&mut xfer as *mut _) } != 0 {
+                        dev.stop_requested.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+
+                // Re-submit the buffer
+                ep.submit(c.buffer);
+            } else {
+                break; // timeout
             }
-        });
-        let id = thread.thread().id();
-        self.thread = Some(thread);
-        self.stream_thread_id = Some(id);
-        let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-        Ok(())
-    }
+        }
+        // When the thread ends, iface is dropped and the interface is released.
+    });
+
+    self.thread = Some(thread);
+    self.stream_thread_id = self.thread.as_ref().map(|t| t.thread().id());
+
+    // Signal “all ready”
+    let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
+
+    Ok(())
+}
 
     fn stop_streaming(&mut self) {
         if !self.streaming.load(Ordering::SeqCst) {
