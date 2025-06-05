@@ -64,7 +64,7 @@ pub struct AirspyhfReadPartIdSerialNo {
 }
 
 use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
-use nusb::{self, Device, MaybeFuture};
+use nusb::{self, Device, Interface, MaybeFuture};   // + Interface
 use std::time::Duration;
 
 const CTRL_TIMEOUT_MS: u64 = 500;
@@ -116,6 +116,8 @@ pub type AirspyhfSampleBlockCbFn = Option<unsafe extern "C" fn(*mut AirspyhfTran
 pub struct AirspyHfDevice {
     /// Underlying USB handle.  Wrapped in a mutex for thread safety.
     pub(crate) handle: Mutex<Device>,
+    /// Claimed interface 0 – needed for control transfers on Windows.
+    pub(crate) interface: Mutex<Option<Interface>>,
     pub(crate) streaming: AtomicBool,
     pub(crate) stop_requested: AtomicBool,
     pub(crate) is_low_if: bool,
@@ -344,6 +346,34 @@ impl AirspyHfDevice {
     }
 
     fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows we must issue control transfers through the interface
+        // that was claimed (and stored) when streaming started.
+        let guard = self.interface.lock().unwrap();
+        let iface = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "interface not claimed"))?;
+
+        iface
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    data,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Linux / macOS can talk to the default control pipe directly
         let handle = self.handle.lock().unwrap().clone();
         handle
             .control_out(
@@ -360,8 +390,38 @@ impl AirspyHfDevice {
             .wait()
             .map_err(io::Error::other)
     }
+}
 
     fn vendor_in(&self, request: u8, value: u16, index: u16, buf: &mut [u8]) -> io::Result<usize> {
+    #[cfg(target_os = "windows")]
+    {
+        let guard = self.interface.lock().unwrap();
+        let iface = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "interface not claimed"))?;
+
+        let data = iface
+            .control_in(
+                ControlIn {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    length: buf.len() as u16,
+                },
+                Duration::from_millis(CTRL_TIMEOUT_MS),
+            )
+            .wait()
+            .map_err(io::Error::other)?;
+
+        let len = std::cmp::min(data.len(), buf.len());
+        buf[..len].copy_from_slice(&data[..len]);
+        Ok(len)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         let handle = self.handle.lock().unwrap().clone();
         let data = handle
             .control_in(
@@ -377,10 +437,12 @@ impl AirspyHfDevice {
             )
             .wait()
             .map_err(io::Error::other)?;
+
         let len = std::cmp::min(data.len(), buf.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok(len)
     }
+}
 
     fn read_flash_config(&mut self) -> io::Result<()> {
         let mut buf = [0u8; 256];
@@ -475,6 +537,29 @@ impl AirspyHfDevice {
     }
 
     fn clear_halt_ep(&self, ep: u8) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(guard) = self.interface.lock() {
+            if let Some(iface) = guard.as_ref() {
+                let _ = iface
+                    .control_out(
+                        ControlOut {
+                            control_type: ControlType::Standard,
+                            recipient: Recipient::Endpoint,
+                            request: 1,  // CLEAR_FEATURE
+                            value: 0,    // ENDPOINT_HALT
+                            index: ep as u16,
+                            data: &[],
+                        },
+                        Duration::from_millis(CTRL_TIMEOUT_MS),
+                    )
+                    .wait();
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         let handle = match self.handle.lock() {
             Ok(h) => h.clone(),
             Err(_) => return,
@@ -493,6 +578,7 @@ impl AirspyHfDevice {
             )
             .wait();
     }
+}
 
     fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
         let re = a.re * b.re - a.im * b.im;
