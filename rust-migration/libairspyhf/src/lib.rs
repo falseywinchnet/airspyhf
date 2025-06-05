@@ -174,6 +174,8 @@ impl AirspyHfDevice {
         let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
+            interface: Mutex::new(None),
+           interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
             is_low_if: false,
@@ -230,6 +232,7 @@ impl AirspyHfDevice {
                             let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
                             let mut dev = AirspyHfDevice {
                                 handle: Mutex::new(dev),
+                                interface: Mutex::new(None),
                                 streaming: AtomicBool::new(false),
                                 stop_requested: AtomicBool::new(false),
                                 is_low_if: false,
@@ -302,6 +305,7 @@ impl AirspyHfDevice {
         let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
+            interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
             is_low_if: false,
