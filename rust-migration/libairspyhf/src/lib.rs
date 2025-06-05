@@ -1105,6 +1105,10 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         return AirspyhfError::Error as i32;
     }
     let d = &mut *dev;
+    let was_streaming = d.streaming.load(Ordering::SeqCst);
+    if was_streaming {
+        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+    }
     let idx = if let Some(pos) = d
         .supported_samplerates
         .iter()
@@ -1139,6 +1143,9 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         d.filter_gain = 1.0;
     }
     airspyhf_set_freq_double(dev, d.freq_hz);
+    if was_streaming {
+        let _ = d.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
+    }
     AirspyhfError::Success as i32
 }
 
