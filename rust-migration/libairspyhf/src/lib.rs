@@ -24,7 +24,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 use std::ffi::c_void;
 use std::io::{self, ErrorKind};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Mutex,
 };
 
@@ -67,7 +67,7 @@ use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 use nusb::{self, Device, Interface, MaybeFuture};   // + Interface
 use std::time::Duration;
 
-const CTRL_TIMEOUT_MS: u64 = 500;
+const CTRL_TIMEOUT_MS: u64 = 100;
 
 const AIRSPYHF_RECEIVER_MODE: u8 = 1;
 const AIRSPYHF_SET_FREQ: u8 = 2;
@@ -120,6 +120,8 @@ pub struct AirspyHfDevice {
     pub(crate) interface: Mutex<Option<Interface>>,
     pub(crate) streaming: AtomicBool,
     pub(crate) stop_requested: AtomicBool,
+    pub(crate) generation: AtomicU32, 
+
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
     pub(crate) iq_balancer: *mut IqBalancer,
@@ -177,6 +179,8 @@ impl AirspyHfDevice {
            interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
+		 generation: AtomicU32::new(0),
+
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -234,6 +238,8 @@ impl AirspyHfDevice {
                                 interface: Mutex::new(None),
                                 streaming: AtomicBool::new(false),
                                 stop_requested: AtomicBool::new(false),
+						generation: AtomicU32::new(0),
+
                                 is_low_if: false,
                                 enable_dsp: 1,
                                 iq_balancer: bal,
@@ -307,6 +313,8 @@ impl AirspyHfDevice {
             interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
+		 generation: AtomicU32::new(0),
+
             is_low_if: false,
             enable_dsp: 1,
             iq_balancer: bal,
@@ -691,6 +699,7 @@ impl AirspyHfDevice {
 
     // Raw pointer for use inside the thread
     let dev_ptr = self as *mut AirspyHfDevice as usize;
+    let my_gen = self.generation.load(Ordering::Acquire); // ← ADD
 
     // ---------- spawn streaming thread ----------
     let thread = std::thread::spawn(move || {
@@ -721,6 +730,9 @@ impl AirspyHfDevice {
         loop {
             let wait = ep.wait_next_complete(Duration::from_millis(1000));
             let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+		 if dev.generation.load(Ordering::Acquire) != my_gen {
+    				break; // ← this thread is stale, exit early
+			}
             if dev.stop_requested.load(Ordering::Relaxed) {
                 break;
             }
@@ -1119,23 +1131,6 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
         d.stop_streaming();        // joins the thread & releases all old USB pipes
     }
 
-    // ---------- ask the firmware to switch rate ----------
-    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
-        return AirspyhfError::Error as i32;
-    }
-
-    // ---------- force a USB-core reset so new pipes appear ----------
-    {
-        let handle_clone = {
-            let guard = d.handle.lock().unwrap();
-            guard.clone()
-        };
-        if handle_clone.reset().wait().is_err() {
-            return AirspyhfError::Error as i32;
-        }
-    }
-
-    // ---------- re-claim interface 0 (all old Interface objects are invalid) ----------
     {
         let mut iface_guard = d.interface.lock().unwrap();
         *iface_guard = None;   // drop stale claim (if any)
@@ -1167,6 +1162,12 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     // gain & LO depend on the new sample-rate
     let _ = d.fetch_filter_gain();
     let _ = airspyhf_set_freq_double(dev, d.freq_hz);
+    d.generation.fetch_add(1, Ordering::AcqRel);//absolutely ensure thread closure
+
+  // ---------- ask the firmware to switch rate ----------
+    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
+        return AirspyhfError::Error as i32;
+    }
 
     // ---------- resume streaming if it was running before ----------
     if was_streaming && d.start_streaming().is_err() {
