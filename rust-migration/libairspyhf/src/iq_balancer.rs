@@ -60,9 +60,9 @@ fn init_library() {
         let mut win = vec![0.0f32; FFTBINS];
         let mut boost = vec![0.0f32; FFTBINS];
         for i in 0..=length {
-            win[i] = 0.35875 - 0.48829 * (2.0 * PI * i as f32 / length as f32).cos()
-                + 0.14128 * (4.0 * PI * i as f32 / length as f32).cos()
-                - 0.01168 * (6.0 * PI * i as f32 / length as f32).cos();
+            win[i] = 0.35767769 - 0.48784312 * (2.0 * PI * i as f32 / length as f32).cos()
+                + 0.14236325 * (4.0 * PI * i as f32 / length as f32).cos()
+                - 0.01211594 * (6.0 * PI * i as f32 / length as f32).cos();
             boost[i] = 1.0 / BOOST_FACTOR
                 + 1.0 / f32::exp((i as f32 * 2.0 / BINS_TO_OPTIMIZE as f32).powi(2));
         }
