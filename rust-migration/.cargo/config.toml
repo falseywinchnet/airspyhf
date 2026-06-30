@@ -1,8 +1,4 @@
 [build]
-# The default target is Linux for CI. Remove or override the line below when
-# building on a different platform. For Windows use
-# `target = "x86_64-pc-windows-msvc"`.
-target = "x86_64-pc-windows-msvc"
 rustflags = [
     "-C", "target-cpu=native",
     "-C", "opt-level=3"

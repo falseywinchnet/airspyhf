@@ -39,6 +39,9 @@ const RAW_BUFFER_COUNT: usize = 8;
 const DEFAULT_IF_SHIFT: u32 = 5000;
 const MIN_ZERO_IF_LO: u32 = 180;
 const MIN_LOW_IF_LO: u32 = 84;
+const INITIAL_PHASE: f32 = 0.00006;
+const INITIAL_AMPLITUDE: f32 = -0.0045;
+const AIRSPYHF_ENDPOINT_IN: u8 = 1;
 
 pub const AIRSPYHF_VER_MAJOR: u32 = 1;
 pub const AIRSPYHF_VER_MINOR: u32 = 8;
@@ -64,10 +67,10 @@ pub struct AirspyhfReadPartIdSerialNo {
 }
 
 use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
-use nusb::{self, Device, Interface, MaybeFuture};   // + Interface
+use nusb::{self, Device, Interface, MaybeFuture};
 use std::time::Duration;
 
-const CTRL_TIMEOUT_MS: u64 = 100;
+const CTRL_TIMEOUT_MS: u64 = 500;
 
 const AIRSPYHF_RECEIVER_MODE: u8 = 1;
 const AIRSPYHF_SET_FREQ: u8 = 2;
@@ -120,7 +123,7 @@ pub struct AirspyHfDevice {
     pub(crate) interface: Mutex<Option<Interface>>,
     pub(crate) streaming: AtomicBool,
     pub(crate) stop_requested: AtomicBool,
-    pub(crate) generation: AtomicU32, 
+    pub(crate) generation: AtomicU32,
 
     pub(crate) is_low_if: bool,
     pub(crate) enable_dsp: u8,
@@ -173,13 +176,13 @@ impl AirspyHfDevice {
             .find(|d| d.vendor_id() == USB_VID && d.product_id() == USB_PID)
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "AirspyHF not found"))?;
         let device = di.open().wait().map_err(io::Error::other)?;
-        let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
+        let bal = unsafe { iq_balancer::iq_balancer_create(INITIAL_PHASE, INITIAL_AMPLITUDE) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
-           interface: Mutex::new(None),
+            interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
-		 generation: AtomicU32::new(0),
+            generation: AtomicU32::new(0),
 
             is_low_if: false,
             enable_dsp: 1,
@@ -232,13 +235,15 @@ impl AirspyHfDevice {
                     if let Some(hex) = sn.strip_prefix("AIRSPYHF SN:") {
                         if u64::from_str_radix(hex, 16).unwrap_or(0) == serial {
                             let dev = di.open().wait().map_err(io::Error::other)?;
-                            let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
+                            let bal = unsafe {
+                                iq_balancer::iq_balancer_create(INITIAL_PHASE, INITIAL_AMPLITUDE)
+                            };
                             let mut dev = AirspyHfDevice {
                                 handle: Mutex::new(dev),
                                 interface: Mutex::new(None),
                                 streaming: AtomicBool::new(false),
                                 stop_requested: AtomicBool::new(false),
-						generation: AtomicU32::new(0),
+                                generation: AtomicU32::new(0),
 
                                 is_low_if: false,
                                 enable_dsp: 1,
@@ -307,13 +312,13 @@ impl AirspyHfDevice {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn open_from_fd(fd: std::os::fd::OwnedFd) -> Result<Self, io::Error> {
         let device = nusb::Device::from_fd(fd).wait().map_err(io::Error::other)?;
-        let bal = unsafe { iq_balancer::iq_balancer_create(0.0, 0.0) };
+        let bal = unsafe { iq_balancer::iq_balancer_create(INITIAL_PHASE, INITIAL_AMPLITUDE) };
         let mut dev = AirspyHfDevice {
             handle: Mutex::new(device),
             interface: Mutex::new(None),
             streaming: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
-		 generation: AtomicU32::new(0),
+            generation: AtomicU32::new(0),
 
             is_low_if: false,
             enable_dsp: 1,
@@ -356,124 +361,121 @@ impl AirspyHfDevice {
         Ok(dev)
     }
 
-   fn vendor_out(&self,
-              request: u8,
-              value:   u16,
-              index:   u16,
-              data:    &[u8]) -> io::Result<()> {
+    fn vendor_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> io::Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            // Make sure interface 0 is claimed and kept inside the mutex scope
+            let mut guard = self.interface.lock().unwrap();
+            if guard.is_none() {
+                let claimed = self
+                    .handle
+                    .lock()
+                    .unwrap()
+                    .claim_interface(0)
+                    .wait()
+                    .map_err(io::Error::other)?;
+                *guard = Some(claimed);
+            }
 
-    #[cfg(target_os = "windows")]
-    {
-        // Make sure interface 0 is claimed and kept inside the mutex scope
-        let mut guard = self.interface.lock().unwrap();
-        if guard.is_none() {
-            let claimed = self.handle
-                .lock().unwrap()
-                .claim_interface(0)
+            guard
+                .as_ref()
+                .unwrap() // still inside the lock
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Vendor,
+                        recipient: Recipient::Device,
+                        request,
+                        value,
+                        index,
+                        data,
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
                 .wait()
-                .map_err(io::Error::other)?;
-            *guard = Some(claimed);
+                .map_err(io::Error::other)
         }
 
-        guard.as_ref().unwrap()                // still inside the lock
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Vendor,
-                    recipient:    Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    data,
-                },
-                Duration::from_millis(CTRL_TIMEOUT_MS),
-            )
-            .wait()
-            .map_err(io::Error::other)
+        #[cfg(not(target_os = "windows"))]
+        {
+            let handle = self.handle.lock().unwrap().clone();
+            handle
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Vendor,
+                        recipient: Recipient::Device,
+                        request,
+                        value,
+                        index,
+                        data,
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
+                .wait()
+                .map_err(io::Error::other)
+        }
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let handle = self.handle.lock().unwrap().clone();
-        handle.control_out(
-                ControlOut {
-                    control_type: ControlType::Vendor,
-                    recipient:    Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    data,
-                },
-                Duration::from_millis(CTRL_TIMEOUT_MS),
-            )
-            .wait()
-            .map_err(io::Error::other)
-    }
-}
+    fn vendor_in(&self, request: u8, value: u16, index: u16, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(target_os = "windows")]
+        {
+            // Ensure interface 0 is claimed, stay in lock while issuing transfer
+            let mut guard = self.interface.lock().unwrap();
+            if guard.is_none() {
+                let claimed = self
+                    .handle
+                    .lock()
+                    .unwrap()
+                    .claim_interface(0)
+                    .wait()
+                    .map_err(io::Error::other)?;
+                *guard = Some(claimed);
+            }
 
-
-    fn vendor_in(&self,
-             request: u8,
-             value:   u16,
-             index:   u16,
-             buf:     &mut [u8]) -> io::Result<usize> {
-
-    #[cfg(target_os = "windows")]
-    {
-        // Ensure interface 0 is claimed, stay in lock while issuing transfer
-        let mut guard = self.interface.lock().unwrap();
-        if guard.is_none() {
-            let claimed = self.handle
-                .lock().unwrap()
-                .claim_interface(0)
+            let data = guard
+                .as_ref()
+                .unwrap()
+                .control_in(
+                    ControlIn {
+                        control_type: ControlType::Vendor,
+                        recipient: Recipient::Device,
+                        request,
+                        value,
+                        index,
+                        length: buf.len() as u16,
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
                 .wait()
                 .map_err(io::Error::other)?;
-            *guard = Some(claimed);
+
+            let len = data.len().min(buf.len());
+            buf[..len].copy_from_slice(&data[..len]);
+            Ok(len)
         }
 
-        let data = guard.as_ref().unwrap()
-            .control_in(
-                ControlIn {
-                    control_type: ControlType::Vendor,
-                    recipient:    Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    length: buf.len() as u16,
-                },
-                Duration::from_millis(CTRL_TIMEOUT_MS),
-            )
-            .wait()
-            .map_err(io::Error::other)?;
+        #[cfg(not(target_os = "windows"))]
+        {
+            let handle = self.handle.lock().unwrap().clone();
+            let data = handle
+                .control_in(
+                    ControlIn {
+                        control_type: ControlType::Vendor,
+                        recipient: Recipient::Device,
+                        request,
+                        value,
+                        index,
+                        length: buf.len() as u16,
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
+                .wait()
+                .map_err(io::Error::other)?;
 
-        let len = data.len().min(buf.len());
-        buf[..len].copy_from_slice(&data[..len]);
-        Ok(len)
+            let len = data.len().min(buf.len());
+            buf[..len].copy_from_slice(&data[..len]);
+            Ok(len)
+        }
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let handle = self.handle.lock().unwrap().clone();
-        let data = handle.control_in(
-                ControlIn {
-                    control_type: ControlType::Vendor,
-                    recipient:    Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    length: buf.len() as u16,
-                },
-                Duration::from_millis(CTRL_TIMEOUT_MS),
-            )
-            .wait()
-            .map_err(io::Error::other)?;
-
-        let len = data.len().min(buf.len());
-        buf[..len].copy_from_slice(&data[..len]);
-        Ok(len)
-    }
-}
-
-
 
     fn read_flash_config(&mut self) -> io::Result<()> {
         let mut buf = [0u8; 256];
@@ -568,48 +570,56 @@ impl AirspyHfDevice {
     }
 
     fn clear_halt_ep(&self, ep: u8) {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(guard) = self.interface.lock() {
-            if let Some(iface) = guard.as_ref() {
-                let _ = iface
-                    .control_out(
-                        ControlOut {
-                            control_type: ControlType::Standard,
-                            recipient: Recipient::Endpoint,
-                            request: 1,  // CLEAR_FEATURE
-                            value: 0,    // ENDPOINT_HALT
-                            index: ep as u16,
-                            data: &[],
-                        },
-                        Duration::from_millis(CTRL_TIMEOUT_MS),
-                    )
-                    .wait();
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(guard) = self.interface.lock() {
+                if let Some(iface) = guard.as_ref() {
+                    let _ = iface
+                        .control_out(
+                            ControlOut {
+                                control_type: ControlType::Standard,
+                                recipient: Recipient::Endpoint,
+                                request: 1, // CLEAR_FEATURE
+                                value: 0,   // ENDPOINT_HALT
+                                index: ep as u16,
+                                data: &[],
+                            },
+                            Duration::from_millis(CTRL_TIMEOUT_MS),
+                        )
+                        .wait();
+                }
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let handle = match self.handle.lock() {
+                Ok(h) => h.clone(),
+                Err(_) => return,
+            };
+            let _ = handle
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Standard,
+                        recipient: Recipient::Endpoint,
+                        request: 1, // CLEAR_FEATURE
+                        value: 0,   // ENDPOINT_HALT
+                        index: ep as u16,
+                        data: &[],
+                    },
+                    Duration::from_millis(CTRL_TIMEOUT_MS),
+                )
+                .wait();
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let handle = match self.handle.lock() {
-            Ok(h) => h.clone(),
-            Err(_) => return,
-        };
-        let _ = handle
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Standard,
-                    recipient: Recipient::Endpoint,
-                    request: 1, // CLEAR_FEATURE
-                    value: 0,   // ENDPOINT_HALT
-                    index: ep as u16,
-                    data: &[],
-                },
-                Duration::from_millis(CTRL_TIMEOUT_MS),
-            )
-            .wait();
+    fn reset_dsp_state(&mut self) {
+        self.dropped_buffers = 0;
+        self.vec = AirspyhfComplexFloat { re: 1.0, im: 0.0 };
+        unsafe {
+            iq_balancer::iq_balancer_set_optimal_point(self.iq_balancer, self.optimal_point);
+        }
     }
-}
 
     fn multiply_complex_complex(a: &mut AirspyhfComplexFloat, b: &AirspyhfComplexFloat) {
         let re = a.re * b.re - a.im * b.im;
@@ -673,131 +683,134 @@ impl AirspyHfDevice {
     }
 
     fn start_streaming(&mut self) -> io::Result<()> {
-    // Already running?
-    if self.streaming.swap(true, Ordering::SeqCst) {
-        return Err(io::Error::new(ErrorKind::Other, "already streaming"));
-    }
-    self.stop_requested.store(false, Ordering::SeqCst);
-
-    // Tell the firmware to enter streaming mode
-    self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[])?;
-
-    // ---------- ensure interface 0 is claimed ----------
-    let iface_clone = {
-        let mut guard = self.interface.lock().unwrap();
-        if guard.is_none() {
-            let iface = self.handle
-                .lock().unwrap()
-                .claim_interface(0)
-                .wait()
-                .map_err(io::Error::other)?;
-            *guard = Some(iface);
-        }
-        // clone *while the lock is held* so both sides share the same claim
-        guard.as_ref().unwrap().clone()
-    };
-
-    // Raw pointer for use inside the thread
-    let dev_ptr = self as *mut AirspyHfDevice as usize;
-    let my_gen = self.generation.load(Ordering::Acquire); // ← ADD
-
-    // ---------- spawn streaming thread ----------
-    let thread = std::thread::spawn(move || {
-        // we own our clone here
-        let iface = iface_clone;
-
-        // Alt-setting 1 exposes the bulk-IN endpoint
-        if iface.set_alt_setting(1).wait().is_err() {
-            return;
+        if self.streaming.swap(true, Ordering::SeqCst) {
+            return Err(io::Error::new(ErrorKind::Other, "already streaming"));
         }
 
-        // Bulk-IN endpoint 0x81
-        let mut ep = match iface.endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x81) {
-            Ok(e)  => e,
-            Err(_) => return,
+        self.stop_requested.store(false, Ordering::SeqCst);
+        self.reset_dsp_state();
+
+        if let Err(err) = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]) {
+            self.streaming.store(false, Ordering::SeqCst);
+            return Err(err);
+        }
+
+        let iface_clone = match self.claim_interface_zero() {
+            Ok(iface) => iface,
+            Err(err) => {
+                self.streaming.store(false, Ordering::SeqCst);
+                return Err(err);
+            }
         };
-        let _ = ep.clear_halt().wait();
 
-        // Pre-queue buffers
-        let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
-        for _ in 0..RAW_BUFFER_COUNT {
-            let mut b = ep.allocate(buf_len);
-            b.set_requested_len(buf_len);
-            ep.submit(b);
+        self.clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN);
+
+        if let Err(err) = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]) {
+            self.streaming.store(false, Ordering::SeqCst);
+            return Err(err);
         }
 
-        // ----------- main loop -----------
-        loop {
-            let wait = ep.wait_next_complete(Duration::from_millis(1000));
-            let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
-		 if dev.generation.load(Ordering::Acquire) != my_gen {
-    				break; // ← this thread is stale, exit early
-			}
-            if dev.stop_requested.load(Ordering::Relaxed) {
-                break;
+        let dev_ptr = self as *mut AirspyHfDevice as usize;
+        let my_gen = self.generation.load(Ordering::Acquire);
+
+        let thread = std::thread::spawn(move || {
+            // we own our clone here
+            let iface = iface_clone;
+
+            // Alt-setting 1 exposes the bulk-IN endpoint
+            if iface.set_alt_setting(1).wait().is_err() {
+                return;
             }
 
-            if let Some(c) = wait {
-                if let Err(e) = c.status {
-                    if e == nusb::transfer::TransferError::Stall {
-                        let _ = ep.clear_halt().wait();
-                        ep.submit(c.buffer);
-                        continue;
-                    }
+            // Bulk-IN endpoint 0x81
+            let mut ep = match iface
+                .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x80 | AIRSPYHF_ENDPOINT_IN)
+            {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let _ = ep.clear_halt().wait();
+
+            // Pre-queue buffers
+            let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4;
+            for _ in 0..RAW_BUFFER_COUNT {
+                let mut b = ep.allocate(buf_len);
+                b.set_requested_len(buf_len);
+                ep.submit(b);
+            }
+
+            // ----------- main loop -----------
+            loop {
+                let wait = ep.wait_next_complete(Duration::from_millis(1000));
+                let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+                if dev.generation.load(Ordering::Acquire) != my_gen {
+                    break;
+                }
+                if dev.stop_requested.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // convert IQ and fire callback
-                let raw = unsafe {
-                    std::slice::from_raw_parts(
-                        c.buffer.as_ptr() as *const i16,
-                        c.buffer.len() / 2,
-                    )
-                };
-                let n = dev.convert_samples(raw);
-
-                if let Some(cb) = dev.callback {
-                    let mut xfer = AirspyhfTransfer {
-                        device: dev_ptr as *mut _,
-                        ctx: dev.ctx,
-                        samples: dev.output_buffer.as_mut_ptr(),
-                        sample_count: n as i32,
-                        dropped_samples: dev.dropped_buffers,
-                    };
-                    if unsafe { cb(&mut xfer as *mut _) } != 0 {
-                        dev.stop_requested.store(true, Ordering::SeqCst);
+                if let Some(c) = wait {
+                    if let Err(e) = c.status {
+                        if e == nusb::transfer::TransferError::Stall {
+                            let _ = ep.clear_halt().wait();
+                            ep.submit(c.buffer);
+                            continue;
+                        }
                         break;
                     }
+
+                    // convert IQ and fire callback
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(
+                            c.buffer.as_ptr() as *const i16,
+                            c.buffer.len() / 2,
+                        )
+                    };
+                    let n = dev.convert_samples(raw);
+
+                    if let Some(cb) = dev.callback {
+                        let mut xfer = AirspyhfTransfer {
+                            device: dev_ptr as *mut _,
+                            ctx: dev.ctx,
+                            samples: dev.output_buffer.as_mut_ptr(),
+                            sample_count: n as i32,
+                            dropped_samples: dev.dropped_buffers,
+                        };
+                        if unsafe { cb(&mut xfer as *mut _) } != 0 {
+                            dev.stop_requested.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+
+                    ep.submit(c.buffer);
+                } else {
+                    continue; // timeout
                 }
-
-                ep.submit(c.buffer);
-            } else {
-                continue; // timeout
             }
-        }
-        // update state on exit
-        let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
-        let _ = dev.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
-        dev.streaming.store(false, Ordering::SeqCst);
-        dev.stop_requested.store(false, Ordering::SeqCst);
-        dev.stream_thread_id = None;
-        // iface_clone drops here → interface released when both clones gone
-    });
+            // update state on exit
+            let dev = unsafe { &mut *(dev_ptr as *mut AirspyHfDevice) };
+            let _ = dev.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+            dev.streaming.store(false, Ordering::SeqCst);
+            dev.stop_requested.store(false, Ordering::SeqCst);
+            dev.stream_thread_id = None;
+            // iface_clone drops here: interface released when both clones gone
+        });
 
-    self.thread = Some(thread);
-    self.stream_thread_id = self.thread.as_ref().map(|t| t.thread().id());
+        self.thread = Some(thread);
+        self.stream_thread_id = self.thread.as_ref().map(|t| t.thread().id());
 
-    // Signal “all ready”
-    let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 1, 0, &[]);
-
-    Ok(())
-}
+        Ok(())
+    }
 
     fn stop_streaming(&mut self) {
         if !self.streaming.load(Ordering::SeqCst) {
             return;
         }
         self.stop_requested.store(true, Ordering::SeqCst);
+        let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN);
         if let Some(id) = self.stream_thread_id {
             if id == std::thread::current().id() {
                 return;
@@ -806,10 +819,24 @@ impl AirspyHfDevice {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, 0, 0, &[]);
         self.streaming.store(false, Ordering::SeqCst);
         self.stop_requested.store(false, Ordering::SeqCst);
         self.stream_thread_id = None;
+    }
+
+    fn claim_interface_zero(&self) -> io::Result<Interface> {
+        let mut guard = self.interface.lock().unwrap();
+        if guard.is_none() {
+            let iface = self
+                .handle
+                .lock()
+                .unwrap()
+                .claim_interface(0)
+                .wait()
+                .map_err(io::Error::other)?;
+            *guard = Some(iface);
+        }
+        Ok(guard.as_ref().unwrap().clone())
     }
 }
 
@@ -1119,55 +1146,55 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
     }
     let d = &mut *dev;
 
-    // locate the requested rate inside the table the firmware gave us
-    let idx = match d.supported_samplerates.iter().position(|&r| r == samplerate) {
-        Some(i) => i,
-        None     => return AirspyhfError::Error as i32,
+    let mut idx = samplerate;
+    if idx > 100 {
+        match d
+            .supported_samplerates
+            .iter()
+            .position(|&r| r == samplerate)
+        {
+            Some(i) => idx = i as u32,
+            None => return AirspyhfError::Error as i32,
+        }
+    }
+    if idx as usize >= d.supported_samplerates.len() {
+        return AirspyhfError::Error as i32;
+    }
+    let idx_usize = idx as usize;
+
+    if d.claim_interface_zero().is_err() {
+        return AirspyhfError::Error as i32;
     };
 
     // ---------- bring streaming to a full stop ----------
     let was_streaming = d.streaming.load(Ordering::SeqCst);
     if was_streaming {
-        d.stop_streaming();        // joins the thread & releases all old USB pipes
-    }
-
-    {
-        let mut iface_guard = d.interface.lock().unwrap();
-        *iface_guard = None;   // drop stale claim (if any)
-
-        match d
-            .handle
-            .lock()
-            .unwrap()
-            .claim_interface(0)
-            .wait()
-            .map_err(|_| io::Error::other("claim interface failed"))
-        {
-            Ok(iface) => *iface_guard = Some(iface),
-            Err(_)    => return AirspyhfError::Error as i32,
-        }
+        d.stop_streaming(); // joins the thread & releases all old USB pipes
     }
 
     // ---------- update cached state while nothing is streaming ----------
     {
         let _g = d.param_lock.lock().unwrap();
-        d.current_samplerate = d.supported_samplerates[idx];
+        d.current_samplerate = d.supported_samplerates[idx_usize];
         d.is_low_if = d
             .samplerate_architectures
-            .get(idx)
+            .get(idx_usize)
             .copied()
-            .unwrap_or(0) != 0;
+            .unwrap_or(0)
+            != 0;
     }
 
-    // gain & LO depend on the new sample-rate
-    let _ = d.fetch_filter_gain();
-    let _ = airspyhf_set_freq_double(dev, d.freq_hz);
-    d.generation.fetch_add(1, Ordering::AcqRel);//absolutely ensure thread closure
+    d.clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN);
 
-  // ---------- ask the firmware to switch rate ----------
-    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[]).is_err() {
+    // ---------- ask the firmware to switch rate ----------
+    if d.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx as u16, &[])
+        .is_err()
+    {
         return AirspyhfError::Error as i32;
     }
+
+    let _ = d.fetch_filter_gain();
+    let _ = airspyhf_set_freq_double(dev, d.freq_hz);
 
     // ---------- resume streaming if it was running before ----------
     if was_streaming && d.start_streaming().is_err() {
@@ -1176,7 +1203,6 @@ pub unsafe extern "C" fn airspyhf_set_samplerate(
 
     AirspyhfError::Success as i32
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_set_freq(dev: AirspyhfDeviceHandle, freq_hz: u32) -> i32 {

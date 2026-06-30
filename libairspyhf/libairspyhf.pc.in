@@ -1,4 +1,4 @@
-prefix=@prefix@
+prefix=${pcfiledir}/../..
 exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
@@ -6,6 +6,6 @@ includedir=@includedir@
 Name: AirSpy HF+ Library
 Description: C Utility Library
 Version: @VERSION@
-Cflags: -I${includedir}/libairspyhf/ @AIRSPYHF_PC_CFLAGS@
-Libs: -L${libdir} -lairspyhf -lm
-Libs.private: @AIRSPYHF_PC_LIBS@
+Cflags: -I${includedir}/libairspyhf @AIRSPYHF_PC_CFLAGS@
+Libs: -L${libdir} -lairspyhf @AIRSPYHF_PC_RPATH@ -lm
+Libs.private: @AIRSPYHF_PC_LIBS_PRIVATE@

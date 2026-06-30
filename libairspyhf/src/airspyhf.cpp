@@ -40,10 +40,10 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include "airspyhf_commands.h"
 #if defined(_MSC_VER)
 #define RESTRICT __restrict
-#elif defined(__GNUC__) 
-#define RESTRICT restrict
 #elif defined(__clang__)
 #define RESTRICT __restrict
+#elif defined(__GNUC__)
+#define RESTRICT __restrict__
 #else
 #define RESTRICT 
 #endif
@@ -53,7 +53,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define VECTORIZE_LOOP _Pragma("loop(ivdep)")
 #elif defined(__clang__)
 #define UNROLL_LOOP _Pragma("clang loop unroll(enable)")
-#define VECTORIZE_LOOP _Pragma("clang loop vectorize(enable)")
+#define VECTORIZE_LOOP
 #elif defined(__GNUC__)
 #define UNROLL_LOOP _Pragma("GCC unroll 4")
 #define VECTORIZE_LOOP _Pragma("GCC ivdep")
