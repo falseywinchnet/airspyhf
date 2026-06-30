@@ -22,7 +22,7 @@
 
 # Based heavily upon the libftdi cmake setup.
 
-set(INSTALL_DEFAULT_BINDIR "bin" CACHE STRING "Appended to CMAKE_INSTALL_PREFIX")
+set(INSTALL_DEFAULT_BINDIR "${CMAKE_INSTALL_BINDIR}" CACHE STRING "Appended to CMAKE_INSTALL_PREFIX")
 
 if(MSVC)
 add_library(libgetopt_static STATIC

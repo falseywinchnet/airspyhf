@@ -38,16 +38,18 @@ endmacro(use_c99)
 use_c99()
 
 # Targets
-set(c_sources ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf.c ${CMAKE_CURRENT_SOURCE_DIR}/iqbalancer.c CACHE INTERNAL "List of C sources")
+set(c_sources ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf.cpp ${CMAKE_CURRENT_SOURCE_DIR}/iqbalancer.cpp CACHE INTERNAL "List of C sources")
 set(c_headers ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf.h ${CMAKE_CURRENT_SOURCE_DIR}/iqbalancer.h ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf_commands.h CACHE INTERNAL "List of C headers")
 
 # Dynamic library
 add_library(airspyhf SHARED ${c_sources} ${AIRSPYHF_DLL_SRCS})
+set_target_properties(airspyhf PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 set_target_properties(airspyhf PROPERTIES VERSION ${AIRSPYHF_VER_MAJOR}.${AIRSPYHF_VER_MINOR}.${AIRSPYHF_VER_REVISION})
 set_target_properties(airspyhf PROPERTIES SOVERSION 0)
 
 # Static library
 add_library(airspyhf-static STATIC ${c_sources})
+set_target_properties(airspyhf-static PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 if(MSVC)
 	set_target_properties(airspyhf-static PROPERTIES OUTPUT_NAME "airspyhf_static")
 else()
@@ -89,15 +91,15 @@ endif( ${CYGWIN} )
 
 if( ${UNIX} )
    install(TARGETS airspyhf
-           LIBRARY DESTINATION lib${LIB_SUFFIX}
+           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
            COMPONENT sharedlibs
            )
    install(TARGETS airspyhf-static
-           ARCHIVE DESTINATION lib${LIB_SUFFIX}
+           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
            COMPONENT staticlibs
            )
    install(FILES ${c_headers}
-           DESTINATION include/${PROJECT_NAME}
+           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}
            COMPONENT headers
            )
 endif( ${UNIX} )

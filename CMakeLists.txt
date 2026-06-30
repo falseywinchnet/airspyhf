@@ -1,7 +1,19 @@
 #top dir cmake project for libairspyhf
 
-cmake_minimum_required(VERSION 2.8)
-project (airspyhf_all)
+cmake_minimum_required(VERSION 3.10)
+project(airspyhf_all C CXX)
+include(GNUInstallDirs)
+
+if(POLICY CMP0068)
+    cmake_policy(SET CMP0068 NEW)
+endif()
+
+if(APPLE)
+    set(CMAKE_MACOSX_RPATH ON)
+    set(CMAKE_INSTALL_NAME_DIR "@rpath" CACHE PATH "macOS dynamic library install name directory" FORCE)
+    set(CMAKE_INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}" CACHE STRING "macOS installed executable rpath" FORCE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF CACHE BOOL "Use install rpath while building" FORCE)
+endif()
 
 #provide missing strtoull() for VC11
 if(MSVC11)
@@ -41,4 +53,3 @@ if(WIN32 AND NOT CMAKE_CROSSCOMPILING)
  COPYONLY)
  endif()
 endif()
-

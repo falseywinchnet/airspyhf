@@ -299,58 +299,59 @@ char* u64toa(uint64_t val, t_u64toa* str)
 int rx_callback(airspyhf_transfer_t* transfer)
 {
 	uint32_t bytes_to_write;
-	void* pt_rx_buffer;
-	ssize_t bytes_written;
+	void* pt_rx_buffer = NULL;
+	size_t bytes_written = 0;
 	struct timeval time_now;
-	float time_difference, rate;
+	float time_difference;
 
-	if( fd ) {
-		// #sample * float size * I+Q
-		bytes_to_write = transfer->sample_count * 4 * 2;
-		pt_rx_buffer = transfer->samples;
-
-		gettimeofday(&time_now, NULL);
-
-		if (!got_first_packet) {
-			t_start = time_now;
-			time_start = time_now;
-			got_first_packet = true;
-		} else {
-			buffer_count++;
-			sample_count += transfer->sample_count;
-			if (buffer_count == 50) {
-				time_difference = TimevalDiff(&time_now, &time_start);
-				rate = time_difference > 0 ? (float) sample_count / time_difference : 0;}
-				average_rate += 0.2f * (rate - average_rate);
-				global_average_rate += average_rate;
-				rate_samples++;
-				time_start = time_now;
-				sample_count = 0;
-				buffer_count = 0;
-			}
-		}
-
-		if (limit_num_samples) {
-			if (bytes_to_write >= bytes_to_xfer) {
-				bytes_to_write = (int)bytes_to_xfer;
-			}
-			bytes_to_xfer -= bytes_to_write;
-		}
-
-		if(pt_rx_buffer) {
-			//bytes_written = fwrite(pt_rx_buffer, 1, bytes_to_write, fd);
-			bytes_written = pt_rx_buffer ? fwrite(pt_rx_buffer, 1, bytes_to_write, fd) : 0;
-		}
-
-		if  ( (bytes_written != bytes_to_write) ||
-			  ((limit_num_samples == true) && (bytes_to_xfer == 0))
-			)
-			return -1;
-		else
-			return 0;
-	} else {
+	if( !fd ) {
 		return -1;
 	}
+
+	// #sample * float size * I+Q
+	bytes_to_write = transfer->sample_count * 4 * 2;
+	pt_rx_buffer = transfer->samples;
+
+	gettimeofday(&time_now, NULL);
+
+	if (!got_first_packet) {
+		t_start = time_now;
+		time_start = time_now;
+		got_first_packet = true;
+	} else {
+		buffer_count++;
+		sample_count += transfer->sample_count;
+		if (buffer_count == 50) {
+			float rate;
+
+			time_difference = TimevalDiff(&time_now, &time_start);
+			rate = time_difference > 0 ? (float) sample_count / time_difference : 0;
+			average_rate += 0.2f * (rate - average_rate);
+			global_average_rate += average_rate;
+			rate_samples++;
+			time_start = time_now;
+			sample_count = 0;
+			buffer_count = 0;
+		}
+	}
+
+	if (limit_num_samples) {
+		if (bytes_to_write >= bytes_to_xfer) {
+			bytes_to_write = (uint32_t)bytes_to_xfer;
+		}
+		bytes_to_xfer -= bytes_to_write;
+	}
+
+	if(pt_rx_buffer) {
+		bytes_written = fwrite(pt_rx_buffer, 1, bytes_to_write, fd);
+	}
+
+	if  ( (bytes_written != bytes_to_write) ||
+		  ((limit_num_samples == true) && (bytes_to_xfer == 0))
+		)
+		return -1;
+	else
+		return 0;
 }
 
 static void usage(void)

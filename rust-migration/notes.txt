@@ -47,3 +47,10 @@
 * Thread safety improvements: Atomic stop/streaming flags, parameter mutex, thread id to avoid join deadlocks.
 * convert_samples now locks around IQ balancing and frequency shifting to avoid races.
 * Added sanity tests covering restart and closing while streaming.
+* USB/reset parity pass with C++:
+  - Rust now uses the same initial IQ correction constants as the C++ driver.
+  - Control-transfer timeout restored to 500 ms to match C++.
+  - Streaming start resets dropped-buffer/DSP rotator state, turns receiver mode off, clears the bulk-IN halt, then turns receiver mode on before the worker thread starts processing.
+  - Streaming stop now turns receiver mode off before joining, bumps the generation counter to retire stale workers, and clears bulk-IN halt.
+  - Samplerate setting now accepts either an index or a sample-rate value like C++, sends SET_SAMPLERATE before refreshing filter gain and retuning, and reuses the same interface-claim helper.
+  - Cargo no longer defaults every build to x86_64-pc-windows-msvc; use an explicit --target when cross-compiling.

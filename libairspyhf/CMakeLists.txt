@@ -21,8 +21,9 @@
 
 # Based heavily upon the libftdi cmake setup.
 
-cmake_minimum_required(VERSION 2.8)
-project(libairspyhf C)
+cmake_minimum_required(VERSION 3.10)
+project(libairspyhf C CXX)
+include(GNUInstallDirs)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/airspyhf.h AIRSPYHF_H_CONTENTS)
 
 STRING(REGEX MATCH "\#define AIRSPYHF_VER_MAJOR[ \t]+([0-9]+)" AIRSPYHF_VER_MJ ${AIRSPYHF_H_CONTENTS})
@@ -46,21 +47,19 @@ set(CMAKE_C_FLAGS_RELEASE "-O3")
 set(CMAKE_BUILD_TYPE Release)
 
 if(APPLE)
-    set(GR_LIBRARY_DIR "lib")
+    set(CMAKE_MACOSX_RPATH ON)
     if(NOT CMAKE_INSTALL_NAME_DIR)
         set(CMAKE_INSTALL_NAME_DIR
-            ${CMAKE_INSTALL_PREFIX}/${GR_LIBRARY_DIR} CACHE
+            "@rpath" CACHE
             PATH "Library Install Name Destination Directory" FORCE)
     endif(NOT CMAKE_INSTALL_NAME_DIR)
     if(NOT CMAKE_INSTALL_RPATH)
         set(CMAKE_INSTALL_RPATH
-            ${CMAKE_INSTALL_PREFIX}/${GR_LIBRARY_DIR} CACHE
+            "@loader_path/../${CMAKE_INSTALL_LIBDIR}" CACHE
             PATH "Library Install RPath" FORCE)
     endif(NOT CMAKE_INSTALL_RPATH)
-    if(NOT CMAKE_BUILD_WITH_INSTALL_RPATH)
-        set(CMAKE_BUILD_WITH_INSTALL_RPATH ON CACHE
-            BOOL "Do Build Using Library Install RPath" FORCE)
-    endif(NOT CMAKE_BUILD_WITH_INSTALL_RPATH)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF CACHE
+        BOOL "Do Build Using Library Install RPath" FORCE)
 endif(APPLE)
 
 if(MSVC)
@@ -92,16 +91,29 @@ ENDFOREACH(inc)
 STRING(REPLACE ";" " " AIRSPYHF_PC_CFLAGS "${AIRSPYHF_PC_CFLAGS}")
 STRING(REPLACE ";" " " AIRSPYHF_PC_LIBS "${AIRSPYHF_PC_LIBS}")
 
+set(AIRSPYHF_PC_LIBS_PRIVATE ${LIBUSB_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+if(NEED_LINKING_AGAINST_LIBM)
+    LIST(APPEND AIRSPYHF_PC_LIBS_PRIVATE m)
+endif()
+STRING(REPLACE ";" " " AIRSPYHF_PC_LIBS_PRIVATE "${AIRSPYHF_PC_LIBS_PRIVATE}")
+
+set(AIRSPYHF_PC_RPATH)
+if(APPLE)
+    set(AIRSPYHF_PC_RPATH "-Wl,-rpath,\${libdir}")
+endif()
+
 # unset these vars to avoid hard-coded paths to cross environment
 IF(CMAKE_CROSSCOMPILING)
     UNSET(AIRSPYHF_PC_CFLAGS)
     UNSET(AIRSPYHF_PC_LIBS)
+    UNSET(AIRSPYHF_PC_LIBS_PRIVATE)
+    UNSET(AIRSPYHF_PC_RPATH)
 ENDIF(CMAKE_CROSSCOMPILING)
 
 set(prefix ${CMAKE_INSTALL_PREFIX})
 set(exec_prefix \${prefix})
-set(libdir \${exec_prefix}/lib${LIB_SUFFIX})
-set(includedir \${prefix}/include)
+set(libdir \${exec_prefix}/${CMAKE_INSTALL_LIBDIR})
+set(includedir \${prefix}/${CMAKE_INSTALL_INCLUDEDIR})
 
 CONFIGURE_FILE(
     ${CMAKE_CURRENT_SOURCE_DIR}/libairspyhf.pc.in
@@ -110,7 +122,7 @@ CONFIGURE_FILE(
 
 INSTALL(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/libairspyhf.pc
-    DESTINATION lib${LIB_SUFFIX}/pkgconfig
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )
 
 ########################################################################
