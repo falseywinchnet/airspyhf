@@ -41,6 +41,13 @@ use_c99()
 set(c_sources ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf.cpp ${CMAKE_CURRENT_SOURCE_DIR}/iqbalancer.cpp CACHE INTERNAL "List of C sources")
 set(c_headers ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf.h ${CMAKE_CURRENT_SOURCE_DIR}/iqbalancer.h ${CMAKE_CURRENT_SOURCE_DIR}/airspyhf_commands.h CACHE INTERNAL "List of C headers")
 
+# The IQ balancer type-puns between complex_t and float storage; disable
+# strict-aliasing optimizations so the compiler can't miscompile it.
+# (Recovered from the Raspberry Pi build.)
+if(NOT MSVC)
+    add_compile_options(-fno-strict-aliasing)
+endif()
+
 # Dynamic library
 add_library(airspyhf SHARED ${c_sources} ${AIRSPYHF_DLL_SRCS})
 set_target_properties(airspyhf PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)

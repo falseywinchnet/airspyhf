@@ -3,3 +3,4 @@
 Cargo.lock
 /build*/
 /install*/
+libairspyhf/recovered-airspyhf-musl/
