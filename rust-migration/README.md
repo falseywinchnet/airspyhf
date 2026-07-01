@@ -75,6 +75,10 @@ and Kani all pass on the current code. `./verify.sh` reruns every available tier
 and reports missing optional tools without hiding failures from tools that are
 installed.
 
+Follow-up forensic work for restart timing, startup pops, and attenuation
+measurements lives under [`docs/`](docs/). Start with
+[`docs/FORENSIC_PROJECT_PLAN.md`](docs/FORENSIC_PROJECT_PLAN.md).
+
 ## Installing
 
 ### macOS / Linux
