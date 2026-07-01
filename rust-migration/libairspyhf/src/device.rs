@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
-use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
+use nusb::transfer::{Buffer, ControlIn, ControlOut, ControlType, Recipient};
 use nusb::{Device, Interface, MaybeFuture};
 
 use crate::commands::*;
@@ -151,7 +151,7 @@ struct CallbackCtx {
 
 /// One completed raw buffer plus the number of buffers dropped before it.
 struct RawBlock {
-    data: Vec<i16>,
+    buffer: Buffer,
     dropped: u32,
 }
 
@@ -557,13 +557,9 @@ impl AirspyHfDevice {
             dev_ptr: self as *mut AirspyHfDevice as usize,
         };
 
-        // Queue of completed blocks + a recycling pool of buffers.
+        // Queue of completed blocks + a return path for consumed USB buffers.
         let (full_tx, full_rx) = sync_channel::<RawBlock>(RAW_BUFFER_COUNT);
-        let (empty_tx, empty_rx) = sync_channel::<Vec<i16>>(RAW_BUFFER_COUNT);
-        let buf_samples = (SAMPLES_TO_TRANSFER as usize) * 2; // I + Q i16 per complex sample
-        for _ in 0..RAW_BUFFER_COUNT {
-            let _ = empty_tx.try_send(Vec::with_capacity(buf_samples));
-        }
+        let (empty_tx, empty_rx) = sync_channel::<Buffer>(RAW_BUFFER_COUNT);
 
         let shared_c = Arc::clone(&self.shared);
         let consumer =
@@ -957,7 +953,10 @@ mod pure_tests {
         shared.set_filter_gain(1.0);
         let mut output = Vec::new();
         let mut rot = AirspyhfComplexFloat { re: 1.0, im: 0.0 };
-        let src = [-32768i16, 32767, 16384, -16384];
+        let src = [
+            0x00, 0x80, 0xff, 0x7f, // im = -32768, re = 32767
+            0x00, 0x40, 0x00, 0xc0, // im = 16384, re = -16384
+        ];
 
         let n = convert_samples(&shared, &mut output, &mut rot, &src);
 
@@ -1126,24 +1125,24 @@ mod loom_tests {
     }
 }
 
-/// Convert one raw interleaved (im, re) i16 block into `output`, applying IQ
+/// Convert one raw interleaved (im, re) i16 byte block into `output`, applying IQ
 /// correction and fine-tuning. Mirrors `convert_samples` in `airspyhf.cpp`.
 /// Runs on the consumer thread over its own buffers plus `&StreamShared`.
 fn convert_samples(
     shared: &StreamShared,
     output: &mut Vec<AirspyhfComplexFloat>,
     rot: &mut AirspyhfComplexFloat,
-    src: &[i16],
+    src: &[u8],
 ) -> usize {
-    let count = src.len() / 2;
+    let count = src.len() / 4;
     if output.len() < count {
         output.resize(count, AirspyhfComplexFloat { re: 0.0, im: 0.0 });
     }
     let conv_gain = (1.0f32 / 32768.0) * shared.filter_gain();
-    for (i, o) in output.iter_mut().enumerate().take(count) {
+    for (o, b) in output.iter_mut().zip(src.chunks_exact(4)) {
         // Wire order is (im, re) per airspyhf_complex_int16_t.
-        let im = src[2 * i] as f32;
-        let re = src[2 * i + 1] as f32;
+        let im = i16::from_le_bytes([b[0], b[1]]) as f32;
+        let re = i16::from_le_bytes([b[2], b[3]]) as f32;
         o.re = re * conv_gain;
         o.im = im * conv_gain;
     }
@@ -1191,7 +1190,7 @@ fn producer_proc(
     my_gen: u32,
     iface: Interface,
     full_tx: SyncSender<RawBlock>,
-    empty_rx: Receiver<Vec<i16>>,
+    empty_rx: Receiver<Buffer>,
 ) {
     if iface.set_alt_setting(1).wait().is_err() {
         retire_stream_generation(&shared, my_gen);
@@ -1217,6 +1216,33 @@ fn producer_proc(
 
     let mut pending_dropped: u32 = 0;
     loop {
+        while let Ok(mut b) = empty_rx.try_recv() {
+            b.set_requested_len(buf_len);
+            ep.submit(b);
+        }
+
+        if ep.pending() == 0 {
+            match empty_rx.recv_timeout(Duration::from_millis(PRODUCER_WAIT_MS)) {
+                Ok(mut b) => {
+                    b.set_requested_len(buf_len);
+                    ep.submit(b);
+                    continue;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if shared.generation.load(Ordering::Acquire) != my_gen
+                        || shared.stop_requested.load(Ordering::Relaxed)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    retire_stream_generation(&shared, my_gen);
+                    break;
+                }
+            }
+        }
+
         let comp = ep.wait_next_complete(Duration::from_millis(PRODUCER_WAIT_MS));
         if shared.generation.load(Ordering::Acquire) != my_gen
             || shared.stop_requested.load(Ordering::Relaxed)
@@ -1234,32 +1260,24 @@ fn producer_proc(
             break;
         }
 
-        // Take a recycled buffer if the consumer has kept up; otherwise this
-        // block is dropped (queue full) and only counted.
-        match empty_rx.try_recv() {
-            Ok(mut data) => {
-                data.clear();
-                // Native-endian i16 decode (all supported hosts are little-endian,
-                // matching the C++ reinterpret). No pointer cast, no alignment
-                // assumption.
-                data.extend(
-                    c.buffer
-                        .chunks_exact(2)
-                        .map(|b| i16::from_ne_bytes([b[0], b[1]])),
-                );
-                match full_tx.try_send(RawBlock {
-                    data,
-                    dropped: pending_dropped,
-                }) {
-                    Ok(()) => pending_dropped = 0,
-                    Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                        pending_dropped = pending_dropped.saturating_add(1);
-                    }
-                }
+        // Loan the completed USB buffer to the consumer. If the queue is full,
+        // drop/count this block and immediately resubmit the same buffer.
+        match full_tx.try_send(RawBlock {
+            buffer: c.buffer,
+            dropped: pending_dropped,
+        }) {
+            Ok(()) => pending_dropped = 0,
+            Err(TrySendError::Full(block)) => {
+                pending_dropped = pending_dropped.saturating_add(1);
+                let mut b = block.buffer;
+                b.set_requested_len(buf_len);
+                ep.submit(b);
             }
-            Err(_) => pending_dropped = pending_dropped.saturating_add(1),
+            Err(TrySendError::Disconnected(_)) => {
+                retire_stream_generation(&shared, my_gen);
+                break;
+            }
         }
-        ep.submit(c.buffer);
     }
 }
 
@@ -1293,7 +1311,7 @@ fn consumer_proc(
     my_gen: u32,
     cbctx: CallbackCtx,
     full_rx: Receiver<RawBlock>,
-    empty_tx: SyncSender<Vec<i16>>,
+    empty_tx: SyncSender<Buffer>,
 ) {
     let mut output: Vec<AirspyhfComplexFloat> = Vec::with_capacity(SAMPLES_TO_TRANSFER as usize);
     let mut rot = AirspyhfComplexFloat { re: 1.0, im: 0.0 };
@@ -1306,9 +1324,9 @@ fn consumer_proc(
                 {
                     break;
                 }
-                let n = convert_samples(&shared, &mut output, &mut rot, &block.data);
+                let n = convert_samples(&shared, &mut output, &mut rot, &block.buffer);
                 // Recycle the raw buffer.
-                let _ = empty_tx.try_send(block.data);
+                let _ = empty_tx.try_send(block.buffer);
 
                 if let Some(cb) = cbctx.cb {
                     let mut xfer = AirspyhfTransfer {
