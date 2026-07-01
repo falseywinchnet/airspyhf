@@ -61,15 +61,20 @@ fn code(res: std::io::Result<()>) -> i32 {
 /// `out` must be a valid, writable pointer.
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_open(out: *mut AirspyhfDeviceHandle) -> i32 {
-    ffi_guard(ERR, || match AirspyHfDevice::open_first() {
-        Ok(d) => {
-            if !out.is_null() {
+    ffi_guard(ERR, || {
+        if out.is_null() {
+            return ERR;
+        }
+        // SAFETY: caller guarantees `out` is writable.
+        unsafe { *out = std::ptr::null_mut() };
+        match AirspyHfDevice::open_first() {
+            Ok(d) => {
                 // SAFETY: caller guarantees `out` is writable.
                 unsafe { *out = Box::into_raw(Box::new(d)) };
+                OK
             }
-            OK
+            Err(_) => ERR,
         }
-        Err(_) => ERR,
     })
 }
 
@@ -77,15 +82,20 @@ pub unsafe extern "C" fn airspyhf_open(out: *mut AirspyhfDeviceHandle) -> i32 {
 /// `out` must be a valid, writable pointer.
 #[no_mangle]
 pub unsafe extern "C" fn airspyhf_open_sn(out: *mut AirspyhfDeviceHandle, serial: u64) -> i32 {
-    ffi_guard(ERR, || match AirspyHfDevice::open_by_serial(serial) {
-        Ok(d) => {
-            if !out.is_null() {
+    ffi_guard(ERR, || {
+        if out.is_null() {
+            return ERR;
+        }
+        // SAFETY: caller guarantees `out` is writable.
+        unsafe { *out = std::ptr::null_mut() };
+        match AirspyHfDevice::open_by_serial(serial) {
+            Ok(d) => {
                 // SAFETY: caller guarantees `out` is writable.
                 unsafe { *out = Box::into_raw(Box::new(d)) };
+                OK
             }
-            OK
+            Err(_) => ERR,
         }
-        Err(_) => ERR,
     })
 }
 
@@ -97,15 +107,18 @@ pub unsafe extern "C" fn airspyhf_open_fd(out: *mut AirspyhfDeviceHandle, fd: i3
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         ffi_guard(ERR, || {
+            if out.is_null() {
+                return ERR;
+            }
+            // SAFETY: caller guarantees `out` is writable.
+            unsafe { *out = std::ptr::null_mut() };
             use std::os::fd::{FromRawFd, OwnedFd};
             // SAFETY: caller passes ownership of a valid USB fd.
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
             match AirspyHfDevice::open_from_fd(owned) {
                 Ok(d) => {
-                    if !out.is_null() {
-                        // SAFETY: caller guarantees `out` is writable.
-                        unsafe { *out = Box::into_raw(Box::new(d)) };
-                    }
+                    // SAFETY: caller guarantees `out` is writable.
+                    unsafe { *out = Box::into_raw(Box::new(d)) };
                     OK
                 }
                 Err(_) => ERR,
@@ -761,6 +774,8 @@ mod tests {
     fn null_handle_is_safe() {
         let n: AirspyhfDeviceHandle = std::ptr::null_mut();
         unsafe {
+            assert_eq!(ERR, airspyhf_open(std::ptr::null_mut()));
+            assert_eq!(ERR, airspyhf_open_sn(std::ptr::null_mut(), 0));
             assert_eq!(ERR, airspyhf_close(n));
             assert_eq!(0, airspyhf_is_streaming(n));
             assert_eq!(0, airspyhf_is_low_if(n));

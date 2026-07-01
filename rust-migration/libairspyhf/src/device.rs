@@ -49,6 +49,8 @@ const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
 const RAW_BUFFER_COUNT: usize = 8;
 const PRODUCER_WAIT_MS: u64 = 10;
 const PRODUCER_CANCEL_DRAIN_MS: u64 = 50;
+const MAX_FIRMWARE_SAMPLERATES: usize = 64;
+const MAX_FIRMWARE_ATT_STEPS: usize = 64;
 const DEFAULT_IF_SHIFT: u32 = 5000;
 const MIN_ZERO_IF_LO: u32 = 180;
 const MIN_LOW_IF_LO: u32 = 84;
@@ -443,17 +445,23 @@ impl AirspyHfDevice {
     fn fetch_samplerates(&mut self) -> io::Result<()> {
         let mut cnt = [0u8; 4];
         self.vendor_in(AIRSPYHF_GET_SAMPLERATES, 0, 0, &mut cnt)?;
-        let count = u32::from_le_bytes(cnt);
+        let count = u32::from_le_bytes(cnt) as usize;
         if count == 0 {
             return Err(io::Error::other("no samplerates"));
         }
-        let mut buf = vec![0u8; count as usize * 4];
+        if count > MAX_FIRMWARE_SAMPLERATES {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "too many samplerates",
+            ));
+        }
+        let mut buf = vec![0u8; count * 4];
         self.vendor_in(AIRSPYHF_GET_SAMPLERATES, 0, count as u16, &mut buf)?;
         self.supported_samplerates = buf
             .chunks_exact(4)
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
             .collect();
-        let mut arch = vec![0u8; count as usize];
+        let mut arch = vec![0u8; count];
         if self
             .vendor_in(
                 AIRSPYHF_GET_SAMPLERATE_ARCHITECTURES,
@@ -476,8 +484,14 @@ impl AirspyHfDevice {
     fn fetch_att_steps(&mut self) -> io::Result<()> {
         let mut cnt = [0u8; 4];
         self.vendor_in(AIRSPYHF_GET_ATT_STEPS, 0, 0, &mut cnt)?;
-        let count = u32::from_le_bytes(cnt);
-        let mut buf = vec![0u8; count as usize * 4];
+        let count = u32::from_le_bytes(cnt) as usize;
+        if count > MAX_FIRMWARE_ATT_STEPS {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "too many attenuation steps",
+            ));
+        }
+        let mut buf = vec![0u8; count * 4];
         self.vendor_in(AIRSPYHF_GET_ATT_STEPS, 0, count as u16, &mut buf)?;
         self.supported_att_steps = buf
             .chunks_exact(4)
@@ -506,6 +520,7 @@ impl AirspyHfDevice {
         cb: crate::AirspyhfSampleBlockCbFn,
         ctx: *mut std::ffi::c_void,
     ) -> io::Result<()> {
+        self.reap_finished_workers();
         if self.shared.streaming.swap(true, Ordering::SeqCst) {
             return Err(io::Error::other("already streaming"));
         }
@@ -565,7 +580,10 @@ impl AirspyHfDevice {
     }
 
     pub(crate) fn stop_streaming(&mut self) {
-        if !self.shared.streaming.load(Ordering::SeqCst) {
+        if !self.shared.streaming.load(Ordering::SeqCst)
+            && self.producer.is_none()
+            && self.consumer.is_none()
+        {
             return;
         }
         self.shared.stop_requested.store(true, Ordering::SeqCst);
@@ -580,7 +598,12 @@ impl AirspyHfDevice {
             let _ = t.join();
         }
         if on_consumer {
-            // Called from within the callback: the consumer unwinds itself.
+            // Called from within the callback: detach the current consumer
+            // handle and leave the generation mismatch/channel disconnect to
+            // make this thread unwind itself after the callback returns.
+            let _ = self.consumer.take();
+            self.shared.streaming.store(false, Ordering::SeqCst);
+            self.consumer_thread_id = None;
             return;
         }
         if let Some(t) = self.consumer.take() {
@@ -589,6 +612,28 @@ impl AirspyHfDevice {
         self.shared.streaming.store(false, Ordering::SeqCst);
         self.shared.stop_requested.store(false, Ordering::SeqCst);
         self.consumer_thread_id = None;
+    }
+
+    fn reap_finished_workers(&mut self) {
+        if self
+            .producer
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            if let Some(t) = self.producer.take() {
+                let _ = t.join();
+            }
+        }
+        if self
+            .consumer
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            if let Some(t) = self.consumer.take() {
+                let _ = t.join();
+            }
+            self.consumer_thread_id = None;
+        }
     }
 
     pub(crate) fn is_streaming(&self) -> bool {
@@ -1149,13 +1194,17 @@ fn producer_proc(
     empty_rx: Receiver<Vec<i16>>,
 ) {
     if iface.set_alt_setting(1).wait().is_err() {
+        retire_stream_generation(&shared, my_gen);
         return;
     }
     let mut ep = match iface
         .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(0x80 | AIRSPYHF_ENDPOINT_IN)
     {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => {
+            retire_stream_generation(&shared, my_gen);
+            return;
+        }
     };
     let _ = ep.clear_halt().wait();
 
@@ -1181,6 +1230,7 @@ fn producer_proc(
                 cancel_and_drain_endpoint(&mut ep);
                 let _ = ep.clear_halt().wait();
             }
+            retire_stream_generation(&shared, my_gen);
             break;
         }
 
@@ -1210,6 +1260,13 @@ fn producer_proc(
             Err(_) => pending_dropped = pending_dropped.saturating_add(1),
         }
         ep.submit(c.buffer);
+    }
+}
+
+fn retire_stream_generation(shared: &StreamShared, my_gen: u32) {
+    if shared.generation.load(Ordering::Acquire) == my_gen {
+        shared.stop_requested.store(true, Ordering::SeqCst);
+        shared.streaming.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1282,4 +1339,5 @@ fn consumer_proc(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    retire_stream_generation(&shared, my_gen);
 }

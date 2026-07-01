@@ -68,6 +68,10 @@ const BUFFERS_TO_SKIP_DEFAULT: i32 = 1;
 const FFT_INTEGRATION_DEFAULT: i32 = 8;
 const FFT_OVERLAP_DEFAULT: i32 = 4;
 const CORRELATION_INTEGRATION_DEFAULT: i32 = 32;
+const MAX_BUFFERS_TO_SKIP_CONFIG: i32 = 1024;
+const MAX_FFT_INTEGRATION_CONFIG: i32 = 64;
+const MAX_FFT_OVERLAP_CONFIG: i32 = 64;
+const MAX_CORRELATION_INTEGRATION_CONFIG: i32 = 4096;
 
 const WORKING_BUFFER_LENGTH: usize =
     FFTBINS * (1 + (FFT_INTEGRATION_DEFAULT as usize / FFT_OVERLAP_DEFAULT as usize));
@@ -227,11 +231,12 @@ impl IqBalancer {
         fft_overlap: i32,
         correlation_integration: i32,
     ) {
-        self.buffers_to_skip = buffers_to_skip;
-        self.fft_integration = fft_integration;
-        self.fft_overlap = fft_overlap;
-        self.correlation_integration = correlation_integration;
-        self.power_flag.resize(fft_integration.max(0) as usize, 0);
+        self.buffers_to_skip = buffers_to_skip.clamp(0, MAX_BUFFERS_TO_SKIP_CONFIG);
+        self.fft_integration = fft_integration.clamp(1, MAX_FFT_INTEGRATION_CONFIG);
+        self.fft_overlap = fft_overlap.clamp(1, MAX_FFT_OVERLAP_CONFIG);
+        self.correlation_integration =
+            correlation_integration.clamp(1, MAX_CORRELATION_INTEGRATION_CONFIG);
+        self.power_flag.resize(self.fft_integration as usize, 0);
         self.reset_flag = true;
     }
 
@@ -627,6 +632,27 @@ mod tests {
         assert!(samples.iter().all(|s| s.re.is_finite() && s.im.is_finite()));
         assert!(bal.phase.is_finite());
         assert!(bal.amplitude.is_finite());
+    }
+
+    #[test]
+    fn configure_clamps_hostile_inputs() {
+        let mut bal = IqBalancer::new(0.00006, -0.0045);
+        bal.configure(i32::MIN, 0, 0, i32::MIN);
+        assert_eq!(bal.buffers_to_skip, 0);
+        assert_eq!(bal.fft_integration, 1);
+        assert_eq!(bal.fft_overlap, 1);
+        assert_eq!(bal.correlation_integration, 1);
+        assert_eq!(bal.power_flag.len(), 1);
+
+        bal.configure(i32::MAX, i32::MAX, i32::MAX, i32::MAX);
+        assert_eq!(bal.buffers_to_skip, MAX_BUFFERS_TO_SKIP_CONFIG);
+        assert_eq!(bal.fft_integration, MAX_FFT_INTEGRATION_CONFIG);
+        assert_eq!(bal.fft_overlap, MAX_FFT_OVERLAP_CONFIG);
+        assert_eq!(
+            bal.correlation_integration,
+            MAX_CORRELATION_INTEGRATION_CONFIG
+        );
+        assert_eq!(bal.power_flag.len(), MAX_FFT_INTEGRATION_CONFIG as usize);
     }
 
     proptest! {
