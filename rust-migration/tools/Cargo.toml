@@ -1,0 +1,15 @@
+[package]
+name = "airspyhf-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line utilities for the Rust AirspyHF+ driver (ports of the C tools)."
+
+# Depend on the driver crate. Its package is `libairspyhf` but its library is
+# named `airspyhf`; the rename here lets the tools `use airspyhf::...`.
+[dependencies]
+airspyhf = { path = "../libairspyhf", package = "libairspyhf" }
+getopts = "0.2"
+ctrlc = "3"
+
+# Bins are auto-discovered from src/bin/*.rs:
+#   airspyhf_lib_version, airspyhf_info, airspyhf_gpio, airspyhf_calibrate, airspyhf_rx
