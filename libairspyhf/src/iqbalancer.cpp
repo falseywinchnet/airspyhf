@@ -129,10 +129,10 @@ static void __init_library()
 	for (i = 0; i <= length; i++)
 	{
 		__fft_window[i] = (float)(
-			+0.35875f
-			- 0.48829f * cos(2.0 * MATH_PI * i / length)
-			+ 0.14128f * cos(4.0 * MATH_PI * i / length)
-			- 0.01168f * cos(6.0 * MATH_PI * i / length)
+			+0.35767769f
+			- 0.48784312f * cos(2.0 * MATH_PI * i / length)
+			+ 0.14236325f * cos(4.0 * MATH_PI * i / length)
+			- 0.01211594f * cos(6.0 * MATH_PI * i / length)
 			);
 		__boost_window[i] = (float)(1.0 / BoostFactor + 1.0 / exp(pow(i * 2.0 / BinsToOptimize, 2.0)));
 	}
