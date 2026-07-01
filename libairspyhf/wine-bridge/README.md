@@ -20,7 +20,7 @@ airspyhf-helper  (native arm64) -> libairspyhf -> libusb -> IOKit -> AirSpy HF
 - **`airspyhf-helper`** links the real (native) `libairspyhf` and owns the device.
 
 Status: **proven end-to-end** — open / enumerate / firmware read / stream
-(~753 kS/s) / stop / close, driving a live AIRSPY HF (RANGER R1.0.8) from a PE
+(~753 kS/s) / stop / close, driving a live AIRSPY HF from a PE
 DLL under Wine.
 
 ## Build
