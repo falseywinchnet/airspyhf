@@ -47,6 +47,8 @@ const MAX_SAMPLERATE_INDEX: u32 = 100;
 const DEFAULT_ATT_STEP_COUNT: usize = 9;
 const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
 const RAW_BUFFER_COUNT: usize = 8;
+const PRODUCER_WAIT_MS: u64 = 10;
+const PRODUCER_CANCEL_DRAIN_MS: u64 = 50;
 const DEFAULT_IF_SHIFT: u32 = 5000;
 const MIN_ZERO_IF_LO: u32 = 180;
 const MIN_LOW_IF_LO: u32 = 84;
@@ -569,7 +571,6 @@ impl AirspyHfDevice {
         self.shared.stop_requested.store(true, Ordering::SeqCst);
         let _ = self.vendor_out(AIRSPYHF_RECEIVER_MODE, RECEIVER_MODE_OFF, 0, &[]);
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        self.clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN);
 
         let on_consumer = self.consumer_thread_id == Some(std::thread::current().id());
 
@@ -1167,18 +1168,18 @@ fn producer_proc(
 
     let mut pending_dropped: u32 = 0;
     loop {
-        let comp = ep.wait_next_complete(Duration::from_millis(1000));
+        let comp = ep.wait_next_complete(Duration::from_millis(PRODUCER_WAIT_MS));
         if shared.generation.load(Ordering::Acquire) != my_gen
             || shared.stop_requested.load(Ordering::Relaxed)
         {
+            cancel_and_drain_endpoint(&mut ep);
             break;
         }
         let Some(c) = comp else { continue };
         if let Err(e) = c.status {
             if e == nusb::transfer::TransferError::Stall {
+                cancel_and_drain_endpoint(&mut ep);
                 let _ = ep.clear_halt().wait();
-                ep.submit(c.buffer);
-                continue;
             }
             break;
         }
@@ -1209,6 +1210,22 @@ fn producer_proc(
             Err(_) => pending_dropped = pending_dropped.saturating_add(1),
         }
         ep.submit(c.buffer);
+    }
+}
+
+fn cancel_and_drain_endpoint(ep: &mut nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>) {
+    if ep.pending() == 0 {
+        return;
+    }
+
+    ep.cancel_all();
+    while ep.pending() > 0 {
+        if ep
+            .wait_next_complete(Duration::from_millis(PRODUCER_CANCEL_DRAIN_MS))
+            .is_none()
+        {
+            break;
+        }
     }
 }
 

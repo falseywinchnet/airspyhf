@@ -1,6 +1,6 @@
 # USB Reset / Restart Forensics
 
-Status: investigation plan, no behavior changes yet.
+Status: first cancellation/order fix applied; instrumentation still pending.
 Date: 2026-07-01.
 
 ## Problem Statement
@@ -29,21 +29,22 @@ by feel.
    - open bulk IN endpoint `0x80 | AIRSPYHF_ENDPOINT_IN`
    - `ep.clear_halt()`
    - submit `RAW_BUFFER_COUNT` bulk IN transfers
-   - loop on `ep.wait_next_complete(Duration::from_millis(1000))`
-   - on stop/generation mismatch, break
+   - loop on `ep.wait_next_complete(Duration::from_millis(10))`
+   - on stop/generation mismatch, call `Endpoint::cancel_all()`, drain returned
+     completions briefly, then exit
+   - on endpoint stall, cancel/drain before calling `ep.clear_halt()`
 3. `stop_streaming`
    - set `stop_requested = true`
    - vendor request `AIRSPYHF_RECEIVER_MODE = OFF`
    - increment `generation`
-   - `clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN)`
    - join producer
    - join consumer unless called from callback
    - clear stream flags
 
-Important detail: the producer may be inside a one-second
-`wait_next_complete()` call when stop is requested. `nusb` documents that
-`wait_next_complete(timeout)` does not cancel a transfer on timeout. The current
-Rust stop path also does not call `Endpoint::cancel_all()`.
+Important detail: the producer used to sit inside a one-second
+`wait_next_complete()` call when stop was requested. `nusb` documents that
+`wait_next_complete(timeout)` does not cancel a transfer on timeout. Patch 1
+reduced that polling interval and added explicit cancellation/draining on exit.
 
 ## C++ Reference Sequence
 
@@ -102,13 +103,36 @@ Platform notes from local nusb backends:
 - Linux: `clear_halt` maps to USBFS `CLEAR_HALT`.
 - Windows: `clear_halt` maps to `WinUsb_ResetPipe`.
 
+## libusb Semantics Checked
+
+Official libusb docs:
+
+- `libusb_cancel_transfer()` is asynchronous. Cancellation completion is
+  reported later through the normal transfer callback path, and applications
+  must not free a cancelled transfer before that completion has arrived.
+- On macOS/iOS, libusb cannot cancel one transfer in isolation; cancelling one
+  transfer on an endpoint causes all transfers on that endpoint to be cancelled.
+  That matches the `cancel_all()` shape used in the Rust patch.
+- Cancelled transfers may have partial data; for this driver's stop path, the
+  policy is to discard cancellation completions because receiver-off/restart is
+  already a stream boundary.
+- `libusb_clear_halt()` documentation says pending transfers should be cancelled
+  before clearing halt. This supports removing stop-time `clear_halt_ep` and
+  making stall recovery cancel/drain before `ep.clear_halt()`.
+
+Sources:
+
+- https://libusb.sourceforge.io/api-1.0/group__libusb__asyncio.html
+- https://libusb.sourceforge.io/api-1.0/group__libusb__dev.html
+
 ## Leading Hypotheses
 
-### H1: Stop latency is dominated by the 1000 ms producer wait
+### H1: Stop latency was dominated by the 1000 ms producer wait
 
 The producer checks `stop_requested` only before and after `wait_next_complete`.
 If receiver-off does not complete or cancel the pending transfer promptly, stop
-can wait until timeout. This is the strongest explanation for slow reset.
+could wait until timeout. This is the strongest explanation for slow reset and
+is the first thing patched.
 
 Experiment:
 
@@ -121,13 +145,16 @@ Experiment:
 - Add producer timestamps around `wait_next_complete`.
 - Run repeated start/stop cycles and record P50/P95/P99 stop duration.
 
-Candidate fix to test after measurement:
+Patch applied:
 
-- Reduce producer wait timeout from 1000 ms to a small value, for example 10-50
-  ms, and measure CPU cost.
-- Better: introduce an explicit stop command to the producer so it can call
-  `ep.cancel_all()` and drain `TransferError::Cancelled` completions before
-  exit.
+- Reduced producer wait timeout from 1000 ms to 10 ms.
+- On stop/generation mismatch, producer calls `ep.cancel_all()` and drains
+  returned completions briefly before exit.
+
+Follow-up measurement:
+
+- Compare restart pop and stop latency with the client app.
+- Measure CPU cost if the app remains streaming for a long session.
 
 ### H2: `clear_halt_ep` during stop is out of order
 
@@ -138,9 +165,15 @@ Rust stop does:
 3. host-side `CLEAR_FEATURE ENDPOINT_HALT`
 4. join producer
 
-nusb says `Endpoint::clear_halt()` should not be called with pending transfers.
-The Rust stop path uses a control transfer helper rather than the producer's
-`Endpoint::clear_halt()`, but it can still race with pending bulk IN transfers.
+nusb and libusb both say halt clear should not be called with pending transfers.
+The Rust stop path used a control transfer helper rather than the producer's
+`Endpoint::clear_halt()`, but it could still race with pending bulk IN
+transfers.
+
+Patch applied:
+
+- Removed stop-time `clear_halt_ep`.
+- Stall recovery now cancels/drains the endpoint before clearing halt.
 
 Experiment:
 
@@ -243,18 +276,24 @@ aggregate in memory and print on stop rather than logging every buffer.
 - No regression in `cargo test`, Miri/Loom/Kani evidence, and hardware
   `airspyhf_info` parity.
 
-## First Patch To Try Later
+## Patch Log
 
-Do not apply this without instrumentation first.
+### Patch 1: explicit producer cancellation on stop
 
-Prototype direction:
+Date: 2026-07-01.
 
-- Add a producer-control channel.
-- On stop, send `ProducerCommand::Stop`.
-- Producer receives stop promptly, calls `ep.cancel_all()`, drains completions
-  until `pending() == 0`, then exits.
-- Remove stop-time `clear_halt_ep`; keep start-time `clear_halt` unless data
-  says otherwise.
+Changes:
 
-This most closely mirrors the C++ driver's explicit `libusb_cancel_transfer`
-path while using nusb's cancellation API.
+- `PRODUCER_WAIT_MS = 10`.
+- `PRODUCER_CANCEL_DRAIN_MS = 50`.
+- Stop path no longer clears halt while producer transfers may be pending.
+- Producer calls `Endpoint::cancel_all()` and drains returned completions on
+  stop/generation mismatch.
+- Stall path cancels/drains before `ep.clear_halt()`.
+
+Why this patch first:
+
+- It is directly supported by nusb and libusb source/docs.
+- It mirrors the C++ driver's explicit `libusb_cancel_transfer` shutdown path.
+- It is small enough to evaluate with the real client before adding more
+  instrumentation or warmup policy.
