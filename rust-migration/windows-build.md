@@ -1,24 +1,36 @@
-# Building the Rust driver on Windows
+# Building the Rust driver for Windows
 
-This repository ships with a `.cargo/config.toml` that targets Linux by default.
-To compile the Rust port on Windows you need the MSVC toolchain and to override
-the target triple.
+See [`README.md`](README.md) for the full build/install/cross-compile guide and
+the important note on DLL naming (the driver installs as `airspyhf.dll`, not
+`libairspyhf.dll`).
 
-1. Install the Windows target:
+## Native build on Windows
 
-   ```shell
-   rustup target add x86_64-pc-windows-msvc
-   ```
+With the MSVC toolchain (Visual Studio Build Tools with C++ support) installed:
 
-2. Either edit `rust-migration/.cargo/config.toml` and set
-   `target = "x86_64-pc-windows-msvc"` or pass the target on the command line:
+```powershell
+cargo build --release
+.\install.ps1            # stages driver + tools + headers into .\dist\install
+```
 
-   ```shell
-   cargo build --release --target x86_64-pc-windows-msvc
-   ```
+`cargo build --release` produces `target\release\airspyhf.dll` plus the five
+tool executables.
 
-3. Ensure that Visual Studio (or Build Tools) with C++ support is installed so
-   that the MSVC linker is available.
+The build is portable by default (no `-C target-cpu=native`). To tune for the
+local CPU, build with `-Native`:
 
-The resulting DLL will appear under
-`rust-migration/target/x86_64-pc-windows-msvc/release/`.
+```powershell
+.\install.ps1 -Native
+```
+
+## Cross-compiling to Windows from Linux/macOS
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+    TARGET=x86_64-pc-windows-gnu ./install.sh
+```
+
+This stages `dist/x86_64-pc-windows-gnu/{lib,bin,include}` (it does not install
+into the host system). Requires the `mingw-w64` cross toolchain. For an MSVC
+target (`x86_64-pc-windows-msvc`) use `cargo-xwin` or build on Windows.

@@ -1,3 +1,40 @@
+=======================================================================
+2026-07-01 STATUS UPDATE (parity audit + refactor + tools + install)
+=======================================================================
+- DONE: Critical DLL rename. [lib] name = "airspyhf" so cargo emits
+  airspyhf.dll (Windows) / libairspyhf.so / libairspyhf.dylib. See README
+  "DLL naming". Verified by cross-compiling to x86_64-pc-windows-gnu.
+- DONE: Refactored the single 1600-line lib.rs into modules mirroring the
+  C++ layout: commands.rs, device.rs, iqbalancer.rs, ffi.rs, lib.rs.
+- DONE: Full-parity audit fixes vs the C++ driver:
+    * IQ balancer phase/amplitude/DC accumulators now f64 (was f32) to
+      match the C++ `double` fields.
+    * Added the post-FFT half-swap (fftshift) that the previous rustfft
+      port omitted; the C++ custom fft() swaps halves so the spectrum is
+      centered on FFTBINS/2. Without this the center-based weighting hit
+      the wrong bins.
+    * Fixed the lower-half correlation loop bound to `< FFTBINS/2 - 1`.
+    * Streaming re-architected to producer/consumer (USB thread + bounded
+      queue + consumer/callback thread) with real dropped-buffer counting;
+      dropped_samples now = dropped_buffers * sample_count.
+    * Device open now pushes stored VCTCXO calibration + frontend options
+      to the firmware (matches airspyhf_open_init).
+- DONE: .cargo/config.toml no longer forces target-cpu=native (that made
+  binaries non-distributable). Native tuning is opt-in via RUSTFLAGS or
+  AIRSPYHF_NATIVE=1.
+- DONE: Ported all five tools to native Rust bins in the new `tools/`
+  workspace crate (lib_version, info, gpio, calibrate, rx).
+- DONE: install.sh (macOS/Linux) + install.ps1 (Windows) with local
+  platform detection and TARGET/PREFIX env overrides for cross-compiling.
+- VERIFIED on real hardware (AIRSPY RANGER R1.0.8): airspyhf_info output
+  matches the installed C++ tool; a bounded airspyhf_rx capture matches
+  the C++ capture in byte count and per-sample statistics. clippy/fmt
+  clean, all unit tests pass.
+- Remaining / nice-to-have: CI (GitHub Actions), property-based & formal
+  verification of the DSP, migration guide, release tagging.
+
+=======================================================================
+
 1. **Analyze current driver architecture**
    - **Status**: Complete.
    - Read existing C/C++ sources under `libairspyhf/` and `tools/`.
