@@ -1,5 +1,19 @@
-[build]
-rustflags = [
-    "-C", "target-cpu=native",
-    "-C", "opt-level=3"
-]
+# Portable build configuration.
+#
+# The previous version forced `-C target-cpu=native`, which bakes in the build
+# machine's instruction set (AVX/AVX2/NEON extensions). Binaries built that way
+# crash with SIGILL / "illegal instruction" on any other CPU, so they cannot be
+# distributed. The x86_64 and aarch64 baselines already include SSE2 / NEON,
+# which is all the DSP hot loops need to autovectorize, so no special CPU flag
+# is required for good performance.
+#
+# Optimization level, LTO and codegen-units are set in the workspace
+# `[profile.release]` and apply to every target.
+#
+# If you are building strictly for the local machine and want the compiler to
+# use every available extension, opt in explicitly, e.g.:
+#
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+#
+# (RUSTFLAGS from the environment overrides anything set here.) The install
+# scripts expose AIRSPYHF_NATIVE=1 as a convenience wrapper for this.

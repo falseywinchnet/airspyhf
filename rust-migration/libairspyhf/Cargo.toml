@@ -3,10 +3,25 @@ name = "libairspyhf"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(miri)'] }
+
 [dependencies]
-nusb = "0.2.0-beta.1"
+nusb = "0.2"
 num-complex = "0.4"
 rustfft = "6"
 
+[dev-dependencies]
+loom = "0.7"
+proptest = "1"
+
+# The library name is deliberately "airspyhf" (not "libairspyhf") so that the
+# produced shared library matches what SDR consumers dynamically load:
+#   Windows -> airspyhf.dll      (NOT libairspyhf.dll)
+#   Linux   -> libairspyhf.so
+#   macOS   -> libairspyhf.dylib
+# Cargo does not prepend "lib" to DLLs on Windows, so this single setting yields
+# the correct file name on every platform. See README.md ("DLL naming").
 [lib]
+name = "airspyhf"
 crate-type = ["cdylib", "rlib"]

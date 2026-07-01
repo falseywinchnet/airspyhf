@@ -1,5 +1,28 @@
 # Internal notes and questions for the Rust migration
 
+## 2026-07-01 — parity audit resolutions
+
+* nusb: confirmed working on macOS against real hardware (enumeration, control
+  transfers, bulk streaming all succeed). Kept nusb over rusb.
+* Threading: settled on std::thread producer/consumer (no async runtime),
+  mirroring the C++ libusb transfer-thread + consumer-thread design.
+* FFI design: internal state is a safe(ish) AirspyHfDevice with methods; the
+  extern "C" layer in ffi.rs is a thin wrapper. C ABI unchanged.
+* Two real correctness bugs found in the old ChatGPT port and fixed:
+    1. rustfft output was used with center-at-FFTBINS/2 indexing but was never
+       fftshifted -> center-based weights/distance hit the wrong bins. Fixed by
+       swapping halves after the forward FFT (matches C++ fft()).
+    2. IQ balancer used f32 where C++ uses double for phase/amplitude and the
+       DC accumulators -> drift over time. Now f64.
+  Also: lower-half correlation loop was off by one vs C++ (`< N/2` vs `< N/2-1`).
+* DLL naming resolved via [lib] name = "airspyhf" (see README). This is the
+  "critical rename" — consumers load airspyhf.dll, never libairspyhf.dll.
+* Build portability: dropped target-cpu=native from .cargo/config.toml.
+* Tools ported to Rust (getopts for arg parsing, ctrlc for Ctrl-C in rx).
+* Note: the test device (AIRSPY RANGER R1.0.8) rejects SET_AGC/SET_LNA vendor
+  commands; both the Rust and C++ airspyhf_rx fail identically there, so use -z
+  (skip manual gain commands) to stream on that unit. Not a driver bug.
+
 * **nusb evaluation**: The driver skeleton currently relies on the `nusb` crate. I need to verify whether it provides stable support across Linux, Windows, and macOS. If features are missing we may need to patch upstream or fall back to `rusb`.
 * **DSP porting**: The C code has several DSP routines such as the IQ balancer. I'm uncertain how best to translate these to idiomatic Rust while maintaining performance. Investigate using `num-complex` and `futures` for streaming.
 * **Threading model**: The original driver uses pthreads. We haven't decided whether to use `std::thread` or an async runtime (`tokio`). Need to prototype both approaches.
