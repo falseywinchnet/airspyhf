@@ -72,6 +72,15 @@ const CORRELATION_INTEGRATION_DEFAULT: i32 = 32;
 const WORKING_BUFFER_LENGTH: usize =
     FFTBINS * (1 + (FFT_INTEGRATION_DEFAULT as usize / FFT_OVERLAP_DEFAULT as usize));
 
+#[allow(clippy::excessive_precision)]
+const FFT_WINDOW_A0: f32 = 0.35767769;
+#[allow(clippy::excessive_precision)]
+const FFT_WINDOW_A1: f32 = 0.48784312;
+#[allow(clippy::excessive_precision)]
+const FFT_WINDOW_A2: f32 = 0.14236325;
+#[allow(clippy::excessive_precision)]
+const FFT_WINDOW_A3: f32 = 0.01211594;
+
 static FFT_WINDOW: OnceLock<Vec<f32>> = OnceLock::new();
 static BOOST_WINDOW: OnceLock<Vec<f32>> = OnceLock::new();
 static DISTANCE_WEIGHTS: OnceLock<Vec<f32>> = OnceLock::new();
@@ -100,9 +109,9 @@ fn init_library() {
         let mut win = vec![0.0f32; FFTBINS];
         let mut boost = vec![0.0f32; FFTBINS];
         for i in 0..=length {
-            win[i] = 0.35875 - 0.48829 * (2.0 * PI * i as f32 / length as f32).cos()
-                + 0.14128 * (4.0 * PI * i as f32 / length as f32).cos()
-                - 0.01168 * (6.0 * PI * i as f32 / length as f32).cos();
+            win[i] = FFT_WINDOW_A0 - FFT_WINDOW_A1 * (2.0 * PI * i as f32 / length as f32).cos()
+                + FFT_WINDOW_A2 * (4.0 * PI * i as f32 / length as f32).cos()
+                - FFT_WINDOW_A3 * (6.0 * PI * i as f32 / length as f32).cos();
             boost[i] = 1.0 / BOOST_FACTOR
                 + 1.0 / f32::exp((i as f32 * 2.0 / BINS_TO_OPTIMIZE as f32).powi(2));
         }
