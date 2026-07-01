@@ -37,6 +37,50 @@ typedef struct {
 static dev_rec       g_recs[MAX_DEVICES];
 static pthread_mutex_t g_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t      g_next_id = 1;
+static int           g_verbose = 0;   /* set via AIRSPYHF_BRIDGE_VERBOSE */
+
+static const char *op_name(uint32_t op)
+{
+    switch (op) {
+    case AHB_OP_LIB_VERSION:                  return "lib_version";
+    case AHB_OP_LIST_DEVICES:                 return "list_devices";
+    case AHB_OP_OPEN:                         return "open";
+    case AHB_OP_OPEN_SN:                      return "open_sn";
+    case AHB_OP_CLOSE:                        return "close";
+    case AHB_OP_GET_OUTPUT_SIZE:              return "get_output_size";
+    case AHB_OP_START:                        return "start";
+    case AHB_OP_STOP:                         return "stop";
+    case AHB_OP_IS_STREAMING:                 return "is_streaming";
+    case AHB_OP_IS_LOW_IF:                    return "is_low_if";
+    case AHB_OP_SET_FREQ:                     return "set_freq";
+    case AHB_OP_SET_FREQ_DOUBLE:              return "set_freq_double";
+    case AHB_OP_SET_LIB_DSP:                  return "set_lib_dsp";
+    case AHB_OP_GET_SAMPLERATES:              return "get_samplerates";
+    case AHB_OP_SET_SAMPLERATE:               return "set_samplerate";
+    case AHB_OP_SET_ATT:                      return "set_att";
+    case AHB_OP_GET_ATT_STEPS:                return "get_att_steps";
+    case AHB_OP_SET_BIAS_TEE:                 return "set_bias_tee";
+    case AHB_OP_GET_BIAS_TEE_COUNT:           return "get_bias_tee_count";
+    case AHB_OP_GET_BIAS_TEE_NAME:            return "get_bias_tee_name";
+    case AHB_OP_GET_CALIBRATION:              return "get_calibration";
+    case AHB_OP_SET_CALIBRATION:              return "set_calibration";
+    case AHB_OP_GET_VCTCXO_CALIBRATION:       return "get_vctcxo_calibration";
+    case AHB_OP_SET_VCTCXO_CALIBRATION:       return "set_vctcxo_calibration";
+    case AHB_OP_GET_FRONTEND_OPTIONS:         return "get_frontend_options";
+    case AHB_OP_SET_FRONTEND_OPTIONS:         return "set_frontend_options";
+    case AHB_OP_SET_OPTIMAL_IQ_CORRECTION_POINT: return "set_optimal_iq_correction_point";
+    case AHB_OP_IQ_BALANCER_CONFIGURE:        return "iq_balancer_configure";
+    case AHB_OP_FLASH_CONFIGURATION:          return "flash_configuration";
+    case AHB_OP_BOARD_PARTID_SERIALNO_READ:   return "board_partid_serialno_read";
+    case AHB_OP_VERSION_STRING_READ:          return "version_string_read";
+    case AHB_OP_SET_USER_OUTPUT:              return "set_user_output";
+    case AHB_OP_SET_HF_AGC:                   return "set_hf_agc";
+    case AHB_OP_SET_HF_AGC_THRESHOLD:         return "set_hf_agc_threshold";
+    case AHB_OP_SET_HF_ATT:                   return "set_hf_att";
+    case AHB_OP_SET_HF_LNA:                   return "set_hf_lna";
+    default:                                  return "?";
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* socket helpers                                                      */
@@ -143,6 +187,7 @@ static int sample_cb(airspyhf_transfer_t *t)
 /* Reply with return code and an output blob. */
 static int reply(int fd, int32_t ret, const void *out, uint32_t out_len)
 {
+    if (g_verbose) LOGF("      <- ret=%d out=%u", ret, out_len);
     ahb_resp_hdr h; h.ret = ret; h.out_len = out_len;
     if (write_full(fd, &h, sizeof(h)) != 0) return -1;
     if (out_len && write_full(fd, out, out_len) != 0) return -1;
@@ -162,6 +207,9 @@ static void serve_control(int fd)
         uint8_t inbuf[512];
         if (req.in_len > sizeof(inbuf)) { LOGF("oversized req %u", req.in_len); break; }
         if (req.in_len && read_full(fd, inbuf, req.in_len) != 0) break;
+
+        if (g_verbose) LOGF("-> %-28s dev=%llu in=%u",
+                            op_name(req.op), (unsigned long long)req.dev, req.in_len);
 
         dev_rec *r = req.dev ? rec_find(req.dev) : NULL;
         airspyhf_device_t *d = r ? r->dev : NULL;
@@ -434,6 +482,7 @@ int main(void)
     int port = AHB_DEFAULT_PORT;
     const char *pe = getenv(AHB_PORT_ENV);
     if (pe) port = atoi(pe);
+    g_verbose = getenv("AIRSPYHF_BRIDGE_VERBOSE") != NULL;
 
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) { perror("socket"); return 1; }
