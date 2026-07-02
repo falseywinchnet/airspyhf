@@ -45,6 +45,50 @@ install(TARGETS airspyhf_gpio RUNTIME DESTINATION ${INSTALL_DEFAULT_BINDIR})
 add_executable(airspyhf_calibrate airspyhf_calibrate.c)
 install(TARGETS airspyhf_calibrate RUNTIME DESTINATION ${INSTALL_DEFAULT_BINDIR})
 
+add_executable(airspyhf_stream_break_test airspyhf_stream_break_test.c)
+install(TARGETS airspyhf_stream_break_test RUNTIME DESTINATION ${INSTALL_DEFAULT_BINDIR})
+
+if(UNIX AND NOT WIN32)
+add_executable(airspyhf-helper
+    ${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge/helper.c
+)
+target_include_directories(airspyhf-helper PRIVATE
+    ${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge
+)
+install(TARGETS airspyhf-helper RUNTIME DESTINATION ${INSTALL_DEFAULT_BINDIR})
+
+set(AIRSPYHF_WINE_SHIM_DIR "${CMAKE_CURRENT_BINARY_DIR}/wine")
+set(AIRSPYHF_WINE_SHIM "${AIRSPYHF_WINE_SHIM_DIR}/airspyhf.dll")
+set(AIRSPYHF_MINGW_CC_DEFAULT x86_64-w64-mingw32-gcc)
+find_program(AIRSPYHF_MINGW_CC
+    NAMES ${AIRSPYHF_MINGW_CC_DEFAULT}
+)
+if(AIRSPYHF_MINGW_CC)
+    add_custom_command(
+        OUTPUT ${AIRSPYHF_WINE_SHIM}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${AIRSPYHF_WINE_SHIM_DIR}
+        COMMAND ${AIRSPYHF_MINGW_CC}
+            -O2 -Wall -Wextra -shared
+            -I${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge
+            -I${CMAKE_SOURCE_DIR}/libairspyhf/src
+            -o ${AIRSPYHF_WINE_SHIM}
+            ${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge/shim.c
+            -lws2_32
+        DEPENDS
+            ${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge/shim.c
+            ${CMAKE_SOURCE_DIR}/libairspyhf/wine-bridge/proto.h
+            ${CMAKE_SOURCE_DIR}/libairspyhf/src/airspyhf.h
+        VERBATIM
+    )
+    add_custom_target(airspyhf-wine-shim ALL DEPENDS ${AIRSPYHF_WINE_SHIM})
+    install(FILES ${AIRSPYHF_WINE_SHIM}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/airspyhf/wine
+    )
+else()
+    message(STATUS "x86_64-w64-mingw32-gcc not found; skipping Wine airspyhf.dll shim")
+endif()
+endif()
+
 if(NOT libairspyhf_SOURCE_DIR)
 include_directories(${LIBAIRSPYHF_INCLUDE_DIR})
 LIST(APPEND TOOLS_LINK_LIBS ${LIBAIRSPYHF_LIBRARIES})
@@ -63,3 +107,7 @@ target_link_libraries(airspyhf_info ${TOOLS_LINK_LIBS})
 target_link_libraries(airspyhf_rx ${TOOLS_LINK_LIBS})
 target_link_libraries(airspyhf_gpio ${TOOLS_LINK_LIBS})
 target_link_libraries(airspyhf_calibrate ${TOOLS_LINK_LIBS})
+target_link_libraries(airspyhf_stream_break_test ${TOOLS_LINK_LIBS})
+if(TARGET airspyhf-helper)
+target_link_libraries(airspyhf-helper ${TOOLS_LINK_LIBS} ${CMAKE_THREAD_LIBS_INIT})
+endif()

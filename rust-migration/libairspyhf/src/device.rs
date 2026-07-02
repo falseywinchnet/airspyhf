@@ -390,6 +390,12 @@ impl AirspyHfDevice {
         Ok(guard.as_ref().unwrap().clone())
     }
 
+    fn release_interface_zero(&self) {
+        if let Ok(mut guard) = self.interface.lock() {
+            *guard = None;
+        }
+    }
+
     fn clear_halt_ep(&self, ep: u8) {
         let ctrl = ControlOut {
             control_type: ControlType::Standard,
@@ -600,6 +606,7 @@ impl AirspyHfDevice {
             let _ = self.consumer.take();
             self.shared.streaming.store(false, Ordering::SeqCst);
             self.consumer_thread_id = None;
+            self.release_interface_zero();
             return;
         }
         if let Some(t) = self.consumer.take() {
@@ -608,6 +615,7 @@ impl AirspyHfDevice {
         self.shared.streaming.store(false, Ordering::SeqCst);
         self.shared.stop_requested.store(false, Ordering::SeqCst);
         self.consumer_thread_id = None;
+        self.release_interface_zero();
     }
 
     fn reap_finished_workers(&mut self) {
@@ -677,29 +685,28 @@ impl AirspyHfDevice {
         let idx = idx_usize as u16;
         self.claim_interface_zero()?;
 
-        let was_streaming = self.shared.streaming.load(Ordering::SeqCst);
-        if was_streaming {
-            self.stop_streaming();
-        }
         self.shared
             .set_current_samplerate(self.supported_samplerates[idx_usize]);
-        self.shared.set_is_low_if(
-            self.samplerate_architectures
-                .get(idx_usize)
-                .copied()
-                .unwrap_or(0)
-                != 0,
-        );
+        let is_low_if = self
+            .samplerate_architectures
+            .get(idx_usize)
+            .copied()
+            .unwrap_or(0)
+            != 0;
+        self.shared.set_is_low_if(is_low_if);
         self.clear_halt_ep(0x80 | AIRSPYHF_ENDPOINT_IN);
+
+        if !is_low_if && self.freq_khz < MIN_ZERO_IF_LO {
+            self.vendor_out(AIRSPYHF_SET_FREQ, 0, 0, &MIN_ZERO_IF_LO.to_be_bytes())?;
+            self.freq_khz = MIN_ZERO_IF_LO;
+        }
+
         self.vendor_out(AIRSPYHF_SET_SAMPLERATE, 0, idx, &[])?;
-        let _ = self.fetch_filter_gain();
+        if self.fetch_filter_gain().is_err() {
+            self.shared.set_filter_gain(1.0);
+        }
         let freq = self.freq_hz;
         self.set_freq(freq)?;
-        if was_streaming {
-            let cb = self.saved_cb;
-            let ctx = self.saved_ctx as *mut std::ffi::c_void;
-            self.start_streaming(cb, ctx)?;
-        }
         Ok(())
     }
 

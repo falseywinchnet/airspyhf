@@ -19,6 +19,9 @@
 #include "airspyhf.h"
 #include "proto.h"
 
+#define AHB_READER_POLL_MS 25
+#define AHB_READER_STOP_WAIT_MS 250
+
 struct airspyhf_device {
     SOCKET            ctrl;       /* persistent control connection */
     CRITICAL_SECTION  lock;       /* serialize control RPCs */
@@ -156,6 +159,16 @@ static DWORD WINAPI reader_thread(LPVOID arg)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     while (InterlockedCompareExchange(&d->streaming, 1, 1)) {
+        fd_set rfds;
+        struct timeval tv;
+        FD_ZERO(&rfds);
+        FD_SET(d->data, &rfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = AHB_READER_POLL_MS * 1000;
+        int ready = select(0, &rfds, NULL, NULL, &tv);
+        if (ready == 0) continue;
+        if (ready == SOCKET_ERROR) break;
+
         ahb_data_hdr h;
         if (recv_full(d->data, &h, sizeof(h)) != 0) break;
         if (h.magic != AHB_DATA_FRAME_MAGIC) break;
@@ -251,7 +264,7 @@ int ADDCALL airspyhf_stop(airspyhf_device_t *device)
         device->data = INVALID_SOCKET;
     }
     if (device->reader) {
-        WaitForSingleObject(device->reader, 2000);
+        WaitForSingleObject(device->reader, AHB_READER_STOP_WAIT_MS);
         CloseHandle(device->reader);
         device->reader = NULL;
     }
