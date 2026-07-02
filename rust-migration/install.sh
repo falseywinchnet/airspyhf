@@ -48,6 +48,42 @@ TARGET_OS="$(os_of "$TRIPLE")"
 echo ">> host:   $HOST_TRIPLE ($HOST_OS)"
 echo ">> target: $TRIPLE ($TARGET_OS)"
 
+# ---- cross toolchain preflight -------------------------------------------
+# The *-pc-windows-gnu targets link through the MinGW-w64 cross GCC, which is
+# not part of the Rust toolchain. Check for it up front and, where we can,
+# install it automatically instead of failing deep inside cargo's linker step.
+ensure_mingw() {
+    local linker="$1" brew_pkg="mingw-w64" apt_pkg="gcc-mingw-w64"
+    command -v "$linker" >/dev/null 2>&1 && return 0
+
+    echo ">> cross linker '$linker' not found (needed for $TRIPLE)"
+    if [ "$HOST_OS" = macos ] && command -v brew >/dev/null 2>&1; then
+        echo ">> installing $brew_pkg via Homebrew ..."
+        brew install "$brew_pkg"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo ">> installing $apt_pkg via apt-get (sudo) ..."
+        sudo apt-get update && sudo apt-get install -y "$apt_pkg"
+    fi
+
+    command -v "$linker" >/dev/null 2>&1 && return 0
+    echo "error: '$linker' still not on PATH. Install the MinGW-w64 cross toolchain:" >&2
+    echo "         macOS:         brew install $brew_pkg" >&2
+    echo "         Debian/Ubuntu: sudo apt-get install $apt_pkg" >&2
+    echo "         Fedora:        sudo dnf install mingw64-gcc  (or mingw32-gcc)" >&2
+    exit 1
+}
+
+if [ "$TARGET_OS" = windows ] && [ "$HOST_OS" != windows ]; then
+    case "$TRIPLE" in
+        x86_64-pc-windows-gnu)  ensure_mingw x86_64-w64-mingw32-gcc ;;
+        i686-pc-windows-gnu)    ensure_mingw i686-w64-mingw32-gcc ;;
+        *-pc-windows-msvc)
+            echo "error: cannot cross-compile the *-windows-msvc target from $HOST_OS." >&2
+            echo "       Use a *-pc-windows-gnu triple (e.g. x86_64-pc-windows-gnu)." >&2
+            exit 1 ;;
+    esac
+fi
+
 # ---- build ---------------------------------------------------------------
 CARGO_ARGS=(build --release)
 [ -n "$TARGET" ] && CARGO_ARGS+=(--target "$TARGET")
@@ -113,6 +149,9 @@ fi
 echo ">> installing into $PREFIX (SUDO='${SUDO:-none}')"
 $SUDO mkdir -p "$LIBDIR" "$BINDIR" "$INCDIR"
 $SUDO install -m 0755 "$OUT/$LIB_SRC" "$LIBDIR/$LIB_DEST"
+if [ "$TARGET_OS" = "macos" ] && command -v install_name_tool >/dev/null 2>&1; then
+    $SUDO install_name_tool -id "@rpath/$LIB_DEST" "$LIBDIR/$LIB_DEST"
+fi
 for t in "${TOOLS[@]}"; do
     $SUDO install -m 0755 "$OUT/$t$EXE" "$BINDIR/$t$EXE"
 done
@@ -134,10 +173,78 @@ if [ "$TARGET_OS" = "linux" ]; then
     fi
 fi
 
+# ---- pkg-config file -------------------------------------------------------
+# The C++/CMake build installs libairspyhf.pc; this one doesn't, which is why
+# tools that locate the library via `pkg-config --cflags --libs libairspyhf`
+# (e.g. libairspyhf/wine-bridge/build.sh) only work after the C++ variant has
+# been installed at least once. Install the same file here so this install.sh
+# alone is sufficient.
+if [ "$TARGET_OS" != "windows" ]; then
+    VER_MAJOR="$(sed -n 's/.*AIRSPYHF_VER_MAJOR: u32 = \([0-9]*\);.*/\1/p' "$SCRIPT_DIR/libairspyhf/src/lib.rs")"
+    VER_MINOR="$(sed -n 's/.*AIRSPYHF_VER_MINOR: u32 = \([0-9]*\);.*/\1/p' "$SCRIPT_DIR/libairspyhf/src/lib.rs")"
+    PC_RPATH=""
+    [ "$TARGET_OS" = "macos" ] && PC_RPATH='-Wl,-rpath,${libdir}'
+    PCDIR="$LIBDIR/pkgconfig"
+    PC_TMP="$(mktemp)"
+    cat > "$PC_TMP" <<EOF
+prefix=\${pcfiledir}/../..
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: AirSpy HF+ Library
+Description: C Utility Library (Rust implementation)
+Version: ${VER_MAJOR}.${VER_MINOR}
+Cflags: -I\${includedir}/libairspyhf
+Libs: -L\${libdir} -lairspyhf ${PC_RPATH}
+EOF
+    $SUDO mkdir -p "$PCDIR"
+    $SUDO install -m 0644 "$PC_TMP" "$PCDIR/libairspyhf.pc"
+    rm -f "$PC_TMP"
+    echo ">> installed pkg-config file: $PCDIR/libairspyhf.pc"
+fi
+
+# ---- Wine bridge -----------------------------------------------------------
+# Install the same helper/shim pair used by the C++ tree. The helper links
+# against the library installed above, so C++ vs Rust behavior is selected by
+# whichever install path last populated PREFIX.
+if [ "$TARGET_OS" != "windows" ]; then
+    BRIDGE_DIR="$REPO_ROOT/libairspyhf/wine-bridge"
+    BRIDGE_TMP="$(mktemp -d)"
+
+    echo ">> building Wine bridge helper against $LIBDIR/$LIB_DEST"
+    cc -O2 -Wall -Wextra \
+        -I"$BRIDGE_DIR" -I"$PREFIX/include" \
+        "$BRIDGE_DIR/helper.c" \
+        -L"$LIBDIR" -lairspyhf -Wl,-rpath,"$LIBDIR" -lpthread \
+        -o "$BRIDGE_TMP/airspyhf-helper"
+    $SUDO install -m 0755 "$BRIDGE_TMP/airspyhf-helper" "$BINDIR/airspyhf-helper"
+    echo ">> installed Wine bridge helper: $BINDIR/airspyhf-helper"
+
+    if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+        echo ">> building Wine airspyhf.dll shim"
+        x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -shared \
+            -I"$BRIDGE_DIR" -I"$REPO_ROOT/libairspyhf/src" \
+            -o "$BRIDGE_TMP/airspyhf.dll" "$BRIDGE_DIR/shim.c" \
+            -lws2_32
+        $SUDO mkdir -p "$LIBDIR/airspyhf/wine"
+        $SUDO install -m 0644 "$BRIDGE_TMP/airspyhf.dll" "$LIBDIR/airspyhf/wine/airspyhf.dll"
+        echo ">> installed Wine shim: $LIBDIR/airspyhf/wine/airspyhf.dll"
+    else
+        echo ">> x86_64-w64-mingw32-gcc not found; skipping Wine airspyhf.dll shim"
+    fi
+
+    rm -rf "$BRIDGE_TMP"
+fi
+
 echo
 echo ">> Installed:"
 echo "     $LIBDIR/$LIB_DEST"
 for t in "${TOOLS[@]}"; do echo "     $BINDIR/$t$EXE"; done
+if [ "$TARGET_OS" != "windows" ]; then
+    echo "     $BINDIR/airspyhf-helper"
+    [ -f "$LIBDIR/airspyhf/wine/airspyhf.dll" ] && echo "     $LIBDIR/airspyhf/wine/airspyhf.dll"
+fi
 echo "     $INCDIR/{airspyhf.h,airspyhf_commands.h,iqbalancer.h}"
 echo
 echo ">> Reminder: SDR consumers expect the shared library named 'airspyhf' on"
