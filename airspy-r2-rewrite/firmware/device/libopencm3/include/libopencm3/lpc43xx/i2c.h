@@ -153,17 +153,25 @@ LGPL License Terms @ref lgpl_license
 
 BEGIN_DECLS
 
+#if defined(LPC43XX_M0)
+#define I2C_M0SUB_CALL __attribute__((long_call))
+#else
+#define I2C_M0SUB_CALL
+#endif
+
 void i2c0_init(const uint16_t duty_cycle_count);
-void i2c0_tx_start(void);
-void i2c0_tx_byte(uint8_t byte);
-uint8_t i2c0_rx_byte(void);
+void I2C_M0SUB_CALL i2c0_tx_start(void);
+void I2C_M0SUB_CALL i2c0_tx_byte(uint8_t byte);
+uint8_t I2C_M0SUB_CALL i2c0_rx_byte(void);
 void i2c0_stop(void);
 
 void i2c1_init(const uint16_t duty_cycle_count);
-void i2c1_tx_start(void);
-void i2c1_tx_byte(uint8_t byte);
-uint8_t i2c1_rx_byte(bool ack);
+void I2C_M0SUB_CALL i2c1_tx_start(void);
+void I2C_M0SUB_CALL i2c1_tx_byte(uint8_t byte);
+uint8_t I2C_M0SUB_CALL i2c1_rx_byte(bool ack);
 void i2c1_stop(void);
+
+#undef I2C_M0SUB_CALL
 
 END_DECLS
 

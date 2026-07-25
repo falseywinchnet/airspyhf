@@ -28,6 +28,9 @@ AR		= $(PREFIX)-ar
 CFLAGS		= -O2 -g3 -Wall -Wextra -I../../../include -fno-common \
 		  -mcpu=cortex-m0 -mthumb -Wstrict-prototypes \
 		  -ffunction-sections -fdata-sections -MD -DLPC43XX -DLPC43XX_M0S
+ifeq ($(RELEASE),1)
+CFLAGS		:= $(filter-out -g%,$(CFLAGS))
+endif
 # ARFLAGS	= rcsv
 ARFLAGS		= rcs
 

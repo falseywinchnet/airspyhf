@@ -38,6 +38,7 @@ OBJCOPY		= $(PREFIX)-objcopy
 OBJDUMP		= $(PREFIX)-objdump
 GDB		= $(PREFIX)-gdb
 TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
+OBJCOPY_BIN_FLAGS ?=
 
 CFLAGS += -std=gnu99 -Os -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
 		 -mthumb -DTHUMB -mcpu=cortex-m0 -flto -ffunction-sections -fdata-sections \
@@ -88,7 +89,7 @@ program: $(BINARY).dfu
 
 %.bin: %.elf
 	@#printf "  OBJCOPY $(*).bin\n"
-	$(Q)$(OBJCOPY) -Obinary $(*).elf $(*).bin
+	$(Q)$(OBJCOPY) $(OBJCOPY_BIN_FLAGS) -Obinary $(*).elf $(*).bin
 
 %.hex: %.elf
 	@#printf "  OBJCOPY $(*).hex\n"

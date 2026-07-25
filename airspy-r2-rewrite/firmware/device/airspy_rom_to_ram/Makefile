@@ -26,7 +26,7 @@ SRC_DIR = airspy_m4
 
 SRC = airspy_m4.c adchs.c
 
-OBJ = m0_bin.o m0s_bin.o
+OBJ = m0_bin.o m0_i2c_wait_bin.o m0s_bin.o
 
 # Source from ../common dir
 VPATH += ../common
@@ -53,10 +53,14 @@ include ../common/Makefile_inc.mk
 # cannot silently reuse a stale M0/M0S object. Keep these rules after the
 # include so the shared makefile's `all` target remains the default goal.
 m0_bin.o: ../airspy_m0/airspy_m0.bin
+m0_i2c_wait_bin.o: ../airspy_m0/airspy_m0_i2c_wait.bin
 m0s_bin.o: ../airspy_m0s/airspy_m0s.bin
 
 ../airspy_m0/airspy_m0.bin:
 	$(MAKE) -C ../airspy_m0
+
+../airspy_m0/airspy_m0_i2c_wait.bin:
+	$(MAKE) -C ../airspy_m0 airspy_m0_i2c_wait.bin
 
 ../airspy_m0s/airspy_m0s.bin:
 	$(MAKE) -C ../airspy_m0s

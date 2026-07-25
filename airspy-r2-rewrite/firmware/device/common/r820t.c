@@ -422,6 +422,8 @@ static int r820t_read(r820t_priv_t *priv, uint8_t *val, int len)
 /*
  * r820t tuning logic
  */
+#define OPTIM_SET_MUX 1
+
 #ifdef OPTIM_SET_MUX
 int r820t_set_mux_freq_idx = -1; /* Default set to invalid value in order to force set_mux */
 #endif

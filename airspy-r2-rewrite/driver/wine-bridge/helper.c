@@ -138,12 +138,34 @@ static void fill_monitor_snapshot(aob_monitor_snapshot *snapshot)
             LIBUSB_RECIPIENT_DEVICE,
         0x87, 0, 0, (unsigned char *)&snapshot->telemetry,
         sizeof(snapshot->telemetry), 500);
-    pthread_mutex_unlock(&record->control_lock);
 
     snapshot->telemetry_result = result;
     snapshot->telemetry_valid =
         result == (int)sizeof(snapshot->telemetry) &&
         snapshot->telemetry.version == AOB_STREAM_CONTRACT_VERSION;
+
+    /*
+     * Stock firmware stalls 0x87. If it does, try the instrumented-vanilla
+     * counter instead, so a vanilla comparison run can be watched live in the
+     * same window. Stock firmware without the patch stalls this too, which
+     * simply leaves vanilla_valid clear.
+     */
+    if (!snapshot->telemetry_valid) {
+        unsigned char raw[4];
+        int vanilla = libusb_control_transfer(
+            prefix->usb_device,
+            LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR |
+                LIBUSB_RECIPIENT_DEVICE,
+            28, 0, 0, raw, sizeof(raw), 500);
+        if (vanilla == (int)sizeof(raw)) {
+            snapshot->vanilla_valid = 1;
+            snapshot->vanilla_fifo_overflow =
+                (uint32_t)raw[0] | ((uint32_t)raw[1] << 8) |
+                ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24);
+        }
+    }
+
+    pthread_mutex_unlock(&record->control_lock);
 }
 
 static int read_full(int fd, void *data, size_t length)

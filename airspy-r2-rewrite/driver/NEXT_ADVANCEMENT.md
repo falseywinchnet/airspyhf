@@ -39,6 +39,17 @@ Stage one preserves:
 - stop-from-callback behavior;
 - compatibility with stock firmware and the current universal firmware.
 
+That compatibility is one-directional and deliberately so. This driver runs
+against old firmware, because the armed start falls back to a legacy one-step
+`RECEIVER_MODE_RX`. Old drivers do **not** run against V7 firmware at 10 MSPS:
+one-step start begins capture before the host has queued transfers, and the
+eight-bank ring covers only 3.3 ms at that rate, so the device can poison its own
+epoch during the host's startup. A receiver that cannot accept 40 MB/s from the
+first sample is not supported.
+
+Any path that restarts capture must therefore go through ARMED rather than
+straight to RX, including sample-rate changes and stop/start cycles.
+
 C++ exceptions never cross the C boundary.
 
 ## Frozen transport baseline

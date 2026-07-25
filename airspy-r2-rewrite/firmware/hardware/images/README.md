@@ -188,3 +188,77 @@ compilation. Debug and boundary-aggregation feature macros remain disabled.
 The release image is byte-for-byte identical to the qualified V7 image above,
 including its size and SHA-256; debug information existed only in intermediate
 ELF sections and never entered the SPI-flash binary.
+
+## Universal V7b I2C-poll-spacing image
+
+`airspy-ring-v7b-universal-i2c-poll-spacing-release.bin` retains the V7 stream
+contract and memory map while throttling the six synchronous I2C wait loops used
+by tuner control on M0.
+
+- Image size: 23,724 bytes
+- SHA-256:
+  `874d1c13473b3db15e1f1f63d0aefdfec9e65e283c6b4601c2636269ec38e806`
+- Stream contract version: 9
+- Four fixed NOPs separate successive APB status observations.
+- The bound is recalibrated to 6,364 iterations to preserve the original
+  approximate wall-clock timeout; ACK/NACK behavior, I2C clock, and the R820T
+  register sequence are unchanged.
+- Byte-for-byte flash readback passed on R2 `35AC63DC2D7D704F` and Mini
+  `35AC63DC2D6ABB4F`; both rebooted at high speed with a clean idle contract.
+
+The linked M0 disassembly was checked for spacing and the recalibrated timeout in
+all six affected functions. The release build and all four firmware/model
+tests pass. The 10 MSPS tracking-filter counter check remains a live
+qualification step.
+
+## Universal V8 boundary/M0SUB-I2C image
+
+`airspy-ring-v8-universal-dual-master-boundary-m0sub-i2c-release.bin` retains
+stream contract version 9 and the public Airspy API.
+
+**Withdrawn: do not deploy.** A sustained R2 session accumulated 12 FIFO
+overflow/poison epochs by bank 787,878 despite clean ownership, USB, DMA, and
+backpressure state. Automatic restart preserved transport operation but not
+the unknown Fs/4 phase, causing corrupt spectrum and audio. V9 restores the
+single-master GPDMA path.
+
+- Image size: 23,676 bytes
+- SHA-256:
+  `6e188dd04b756b51c145c5d10456fd84516f958ab30eae483c978844273df629`
+- Normal release boundary traffic to the shared contract is reduced from 32
+  unconditional accesses to approximately ten, with control state and FIFO
+  peak capture remaining inside the ISR.
+- The six synchronous I2C wait routines occupy a 456-byte image at M0SUB SRAM
+  `0x18000000`; the main M0 image excludes them.
+- GPDMA reads the peripheral FIFO through Master 1, as UM10503 requires, and
+  writes capture SRAM through Master 0.
+- ADC start now observes the NXP-required bandgap/core stabilization interval.
+- All four firmware/model tests pass.
+- Exact flash readback passed on R2 `35AC63DC2D7D704F` and Mini
+  `35AC63DC2D6ABB4F`; both rebooted and enumerated at high speed.
+- A cold Mini run completed 1,476 banks at 6 MS/s with zero FIFO, descriptor,
+  DMA, ownership, or ADC range faults.
+
+Cold qualification separated two older startup effects. The new ADC power-up
+delay removed simultaneous over/under-range flags. A FIFO poison after 4–6
+banks remains because the host starts RX and then performs a synchronous
+R820T tracking-filter/PLL I2C tune on M0. The wait-loop relocation alone does
+not make that live control transaction safe; V8 does not claim otherwise.
+
+## Universal V9 single-master/optimized-mux image
+
+`airspy-ring-v9-single-master-optim-mux-release.bin` is the replacement for V8.
+
+- Image size: 23,708 bytes
+- SHA-256:
+  `ea51f07262109bbb1b36b1de8295c3a1831e7c285e0e3b5a3ee8fb9acc7e25aa`
+- GPDMA source and destination are both restored to Master 1.
+- `OPTIM_SET_MUX` skips six tracking-filter writes on same-band retunes.
+- All four firmware/model tests pass.
+- Exact flash readback passed on R2 `35AC63DC2D7D704F` and Mini
+  `35AC63DC2D6ABB4F`; both rebooted and enumerated at high speed.
+
+The known first-start live-tune overflow remains: a cold R2 test poisoned after
+three banks because the post-start PLL transaction is still synchronous. V9
+reduces same-band retune traffic and removes V8's unqualified sustained DMA
+behavior; it does not claim to solve synchronous tuner control.

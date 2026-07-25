@@ -27,6 +27,8 @@ extern "C"
 
 extern uint8_t m0_bin[];
 extern uint32_t m0_bin_size;
+extern uint8_t m0_i2c_wait_bin[];
+extern uint32_t m0_i2c_wait_bin_size;
 extern uint32_t cm0_exec_baseaddr; /* defined in linker script */
 
 #ifdef __cplusplus

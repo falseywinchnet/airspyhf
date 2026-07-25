@@ -34,6 +34,15 @@
 #define STATUS0_CLEAR_MASK (0x7F)
 #define STATUS1_CLEAR_MASK (0x1FFFFFFF)
 
+/*
+ * POWER_CONTROL enables the ADC core and its bandgap. UM10503 section 48.7.2
+ * requires RECOVERY_TIME/fADC plus 100 us for the bandgap and 10 us for ADC
+ * power before conversion. The existing delay loop takes roughly three M4
+ * cycles per iteration: 10,000 iterations are about 147 us on the 204 MHz R2
+ * and 250 us on the 120 MHz Mini, covering both supported configurations.
+ */
+#define ADCHS_COLD_POWERUP_DELAY (10000u)
+
 typedef struct
 {
   uint32_t src_addr;
@@ -318,6 +327,7 @@ void ADCHS_init(void)
   (0 << 16)    |
   (1 << 17)    |
   (1 << 18);
+  delay(ADCHS_COLD_POWERUP_DELAY);
   LPC_ADCHS->ADC_SPEED = 0x0;
 
   LPC_ADCHS->FLUSH = 1;

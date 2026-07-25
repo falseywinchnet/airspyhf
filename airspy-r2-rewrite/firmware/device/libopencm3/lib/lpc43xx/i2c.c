@@ -42,7 +42,38 @@ LGPL License Terms @ref lgpl_license
 #include <libopencm3/lpc43xx/scu.h>
 #include <libopencm3/lpc43xx/cgu.h>
 
-#define I2C_TIMEOUT (10000)
+#define I2C_TIMEOUT_ORIGINAL_ITERATIONS (10000u)
+#define I2C_POLL_ORIGINAL_CYCLES (7u)
+#define I2C_POLL_SPACING_CYCLES (4u)
+#define I2C_TIMEOUT \
+  ((I2C_TIMEOUT_ORIGINAL_ITERATIONS * I2C_POLL_ORIGINAL_CYCLES + \
+    I2C_POLL_ORIGINAL_CYCLES + I2C_POLL_SPACING_CYCLES - 1u) / \
+   (I2C_POLL_ORIGINAL_CYCLES + I2C_POLL_SPACING_CYCLES))
+
+/*
+ * Vendor-request tuner access runs these polls on M0 while ADC/GPDMA remains
+ * live. Avoid issuing APB status reads back-to-back at the maximum core rate.
+ * The original loop took approximately seven core cycles; compensate its
+ * 10,000-iteration timeout for the four added cycles so the wall-clock bound
+ * remains approximately unchanged. WFE is not safe here because I2C completion
+ * is polled and is not a guaranteed event source.
+ */
+static inline void i2c_poll_spacing(void)
+{
+  __asm__ volatile (
+    "nop\n\t"
+    "nop\n\t"
+    "nop\n\t"
+    "nop\n\t"
+    ::: "memory");
+}
+
+#if defined(LPC43XX_M0)
+#define I2C_WAIT_FUNCTION \
+  __attribute__((section(".m0sub_i2c_wait"), noinline, long_call))
+#else
+#define I2C_WAIT_FUNCTION
+#endif
 
 #define SFSP_I2C1_SDA_SCL (0x00000001 | SCU_CONF_ZIF_DIS_IN_GLITCH_FILT | SCU_CONF_EZI_EN_IN_BUFFER)
 
@@ -80,7 +111,7 @@ void i2c1_init(const uint16_t duty_cycle_count)
 }
 
 /* transmit start bit */
-void i2c0_tx_start(void)
+void I2C_WAIT_FUNCTION i2c0_tx_start(void)
 {
   uint32_t timeout;
 
@@ -90,6 +121,7 @@ void i2c0_tx_start(void)
   timeout = 0;
   while( (!(I2C0_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 
@@ -97,7 +129,7 @@ void i2c0_tx_start(void)
 }
 
 /* transmit start bit */
-void i2c1_tx_start(void)
+void I2C_WAIT_FUNCTION i2c1_tx_start(void)
 {
   uint32_t timeout;
 
@@ -107,6 +139,7 @@ void i2c1_tx_start(void)
   timeout = 0;
   while( (!(I2C1_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 
@@ -114,7 +147,7 @@ void i2c1_tx_start(void)
 }
 
 /* transmit data byte */
-void i2c0_tx_byte(uint8_t byte)
+void I2C_WAIT_FUNCTION i2c0_tx_byte(uint8_t byte)
 {
   uint32_t timeout;
 
@@ -128,12 +161,13 @@ void i2c0_tx_byte(uint8_t byte)
   timeout = 0;
   while( (!(I2C0_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 }
 
 /* transmit data byte */
-void i2c1_tx_byte(uint8_t byte)
+void I2C_WAIT_FUNCTION i2c1_tx_byte(uint8_t byte)
 {
   uint32_t timeout;
 
@@ -147,12 +181,13 @@ void i2c1_tx_byte(uint8_t byte)
   timeout = 0;
   while( (!(I2C1_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 }
 
 /* receive data byte */
-uint8_t i2c0_rx_byte(void)
+uint8_t I2C_WAIT_FUNCTION i2c0_rx_byte(void)
 {
   uint32_t timeout;
 
@@ -165,6 +200,7 @@ uint8_t i2c0_rx_byte(void)
   timeout = 0;
   while( (!(I2C0_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 
@@ -172,7 +208,7 @@ uint8_t i2c0_rx_byte(void)
 }
 
 /* receive data byte (ack=1 => ACK if ack=0 NACK) */
-uint8_t i2c1_rx_byte(bool ack)
+uint8_t I2C_WAIT_FUNCTION i2c1_rx_byte(bool ack)
 {
   uint32_t timeout;
 
@@ -193,6 +229,7 @@ uint8_t i2c1_rx_byte(bool ack)
   timeout = 0;
   while( (!(I2C1_CONSET & I2C_CONSET_SI)) && (timeout < I2C_TIMEOUT) )
   {
+    i2c_poll_spacing();
     timeout++;
   }
 
@@ -220,4 +257,3 @@ void i2c1_stop(void)
 }
 
 /**@}*/
-

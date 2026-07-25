@@ -112,6 +112,8 @@ static NSString *mode_name(uint32_t mode)
     int _socket;
     BOOL _haveBaseline;
     aob_monitor_snapshot _baseline;
+    BOOL _haveVanillaBaseline;
+    uint32_t _vanillaBaseline;
 }
 
 - (NSTextField *)labelWithText:(NSString *)text
@@ -324,6 +326,32 @@ static NSString *mode_name(uint32_t mode)
         _status.stringValue = @"Helper unavailable — reconnecting…";
         _status.textColor = NSColor.systemOrangeColor;
         _session.stringValue = @"";
+        return;
+    }
+
+    /*
+     * Instrumented vanilla exposes exactly one counter and nothing else, so
+     * the table stays cleared and the value is reported on its own line. The
+     * baseline resets whenever the count goes backwards, which is how a
+     * clear-and-retest shows up.
+     */
+    if (!snapshot.telemetry_valid && snapshot.vanilla_valid) {
+        uint32_t now = snapshot.vanilla_fifo_overflow;
+        if (!_haveVanillaBaseline || now < _vanillaBaseline) {
+            _vanillaBaseline = now;
+            _haveVanillaBaseline = YES;
+        }
+        _status.stringValue = @"Vanilla firmware (instrumented) — "
+                              @"ADC FIFO overflow only";
+        _status.textColor = now > _vanillaBaseline
+            ? NSColor.systemRedColor
+            : NSColor.secondaryLabelColor;
+        _session.stringValue =
+            [NSString stringWithFormat:
+                @"ADC FIFO overflows: %u total, +%u since baseline",
+             now, now - _vanillaBaseline];
+        _haveBaseline = NO;
+        [self clearRows];
         return;
     }
 

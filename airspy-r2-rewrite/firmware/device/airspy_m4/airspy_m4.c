@@ -96,9 +96,12 @@ static uint32_t adc_ring_generation;
 static uint32_t adc_ring_last_completion_cycles;
 static uint32_t adc_ring_reserved_mask;
 static uint32_t adc_ring_slot_bank[AIRSPY_STREAM_BUFFER_COUNT];
+static uint32_t adc_ring_bank_address[AIRSPY_STREAM_BUFFER_COUNT];
+static uint32_t adc_ring_produced_generation[AIRSPY_STREAM_BUFFER_COUNT];
 static uint32_t adc_ring_steer_cursor;
 static uint32_t adc_ring_available_mask;
 static uint32_t adc_ring_ready_mask;
+static uint32_t adc_ring_discard_mask;
 static uint32_t adc_ring_group_bank_mask[4];
 static uint8_t adc_ring_bank_group[AIRSPY_STREAM_BUFFER_COUNT];
 static uint8_t adc_ring_group_available[4];
@@ -106,6 +109,12 @@ static uint32_t adc_ring_available_count;
 static uint32_t adc_ring_available_groups;
 static uint32_t adc_ring_retire_read_sequence;
 static uint32_t adc_ring_last_retire_overflows;
+static uint32_t adc_ring_capture_completed;
+static uint32_t adc_ring_maximum_completion_cycles;
+static uint32_t adc_ring_steering_overwrites;
+static uint32_t adc_ring_backpressure_discontinuities;
+static uint32_t adc_fifo_level_high_water;
+static uint32_t adc_fifo_full_observations;
 
 static uint32_t adc_ring_next_index(const uint32_t index)
 {
@@ -281,9 +290,8 @@ static void service_adc_submission_grants(void)
       {
         continue;
       }
-      volatile const airspy_stream_buffer_record_t* const record =
-        &stream_contract->buffers[index];
-      const uint32_t generation = record->produced_generation;
+      const uint32_t generation =
+        adc_ring_produced_generation[index];
       if (selected == AIRSPY_STREAM_BUFFER_COUNT
         || adc_ring_generation_older(generation, selected_generation))
       {
@@ -392,14 +400,12 @@ static uint32_t adc_ring_choose_destination(
       index = adc_ring_next_index(index);
       continue;
     }
-    volatile const airspy_stream_buffer_record_t* const record =
-      &stream_contract->buffers[index];
     if (selected == AIRSPY_STREAM_BUFFER_COUNT
       || adc_ring_generation_older(
-        record->produced_generation, selected_age))
+        adc_ring_produced_generation[index], selected_age))
     {
       selected = index;
-      selected_age = record->produced_generation;
+      selected_age = adc_ring_produced_generation[index];
     }
     index = adc_ring_next_index(index);
   }
@@ -411,31 +417,29 @@ static uint32_t adc_ring_choose_destination(
   return selected;
 }
 
-static uint32_t adc_ring_record_depth(void)
+static void adc_ring_publish_telemetry(void)
 {
-  const uint32_t count = adc_ring_available_count;
-  const uint32_t group_count = adc_ring_available_group_count();
-  stream_contract->steering_current_available = count;
-  stream_contract->steering_current_groups = group_count;
-#ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
-  if (count <= AIRSPY_STREAM_BUFFER_COUNT)
-  {
-    stream_contract->steering_available_histogram[count]++;
-  }
-  if (count < stream_contract->steering_minimum_available)
-  {
-    stream_contract->steering_minimum_available = count;
-  }
-  if (group_count < stream_contract->steering_minimum_groups)
-  {
-    stream_contract->steering_minimum_groups = group_count;
-  }
-  if (count == 2u)
-  {
-    stream_contract->steering_floor_boundaries++;
-  }
-#endif
-  return count;
+  /*
+   * These values are observational, not ownership authorities. Publish them
+   * from the WFE-driven main context so the DMA boundary touches only state
+   * required to hand a bank safely to M0.
+   */
+  stream_contract->capture_generation = adc_ring_generation;
+  stream_contract->capture_completed = adc_ring_capture_completed;
+  stream_contract->maximum_completion_cycles =
+    adc_ring_maximum_completion_cycles;
+  stream_contract->steering_current_available =
+    adc_ring_available_count;
+  stream_contract->steering_current_groups =
+    adc_ring_available_group_count();
+  stream_contract->steering_overwrites =
+    adc_ring_steering_overwrites;
+  stream_contract->backpressure_discontinuity_count =
+    adc_ring_backpressure_discontinuities;
+  stream_contract->adc_fifo_level_high_water =
+    adc_fifo_level_high_water;
+  stream_contract->adc_fifo_full_observations =
+    adc_fifo_full_observations;
 }
 
 static uint32_t stream_checksum(
@@ -785,8 +789,15 @@ static void adchs_start_internal(const uint8_t chan_num)
     adc_ring_available_count = AIRSPY_STREAM_BUFFER_COUNT;
     adc_ring_available_groups = 4u;
     adc_ring_ready_mask = 0;
+    adc_ring_discard_mask = 0;
     adc_ring_retire_read_sequence = 0;
     adc_ring_last_retire_overflows = 0;
+    adc_ring_capture_completed = 0;
+    adc_ring_maximum_completion_cycles = 0;
+    adc_ring_steering_overwrites = 0;
+    adc_ring_backpressure_discontinuities = 0;
+    adc_fifo_level_high_water = 0;
+    adc_fifo_full_observations = 0;
     for (uint32_t group = 0; group < 4u; ++group)
     {
       adc_ring_group_bank_mask[group] = 0;
@@ -797,6 +808,9 @@ static void adchs_start_internal(const uint8_t chan_num)
       const uint32_t group =
         adc_ring_slave_group(stream_contract->buffers[i].address);
       adc_ring_slot_bank[i] = i;
+      adc_ring_bank_address[i] =
+        stream_contract->buffers[i].address;
+      adc_ring_produced_generation[i] = 0;
       adc_ring_bank_group[i] = group;
       adc_ring_group_bank_mask[group] |= 1u << i;
       adc_ring_group_available[group]++;
@@ -840,40 +854,41 @@ static void adc_fifo_observe_level(const uint32_t status)
   if (level == 0 && (status & STAT0_FIFO_EMPTY) == 0)
   {
     level = 16;
-    stream_contract->adc_fifo_full_observations++;
+    adc_fifo_full_observations++;
   }
-  if (level > stream_contract->adc_fifo_level_high_water)
+  if (level > adc_fifo_level_high_water)
   {
-    stream_contract->adc_fifo_level_high_water = level;
+    adc_fifo_level_high_water = level;
   }
 }
 
-static void adc_stream_poison_fifo(const uint32_t status)
+static void adc_stream_note_fifo_overflow(const uint32_t status)
 {
-  adc_fifo_observe_level(status);
-  if (stream_contract->mode != AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER
-    || stream_contract->stream_poisoned != 0)
-  {
-    return;
-  }
-
   /*
-   * FIFO loss destroys the Fs/4 phase but does not identify how many samples
-   * disappeared. End this capture epoch immediately; no descriptor completing
-   * at or after the fault is allowed to publish a bank.
+   * Count the overflow and keep capturing. This is what stock firmware does,
+   * and measurement on stock says it is the correct behaviour.
+   *
+   * The previous code ended the capture epoch here, on the reasoning that FIFO
+   * loss destroys the Fs/4 phase by an unknown sample count. The premise was
+   * wrong. Instrumented stock firmware (vendor command 28, added in
+   * airspy-r2-research/upstream/airspyone_firmware) overflows a handful of
+   * times on every band change at 10 MSPS and has done so for as long as the
+   * product has shipped, with no mirrored spectrum and no user-visible effect.
+   *
+   * The likely reason is FIFO_CFG bit 0, PACKED_READ, which stores two samples
+   * per FIFO entry. If the overflow discards whole entries, every lost run is
+   * even, and an even loss cannot swap I and Q. It can only flip phase by 180
+   * degrees when the run is 2 mod 4, which is inaudible and invisible. That
+   * mechanism is inferred from the packing configuration and from a run of
+   * clean observations, not from a statement in UM10503.
+   *
+   * So an overflow costs a short discontinuity, which is the same cost as the
+   * deliberate bank discards this firmware already takes. Halting the stream
+   * converted a survivable event into a dead radio, which is strictly worse.
    */
-  LPC_ADCHS->TRIGGER = 0;
-  LPC_GPDMA->C0CONFIG |= 1u << 18; /* Halt after the current bus transaction. */
-  LPC_ADCHS->CLR_EN0 = STAT0_FIFO_OVERFLOW;
-  LPC_ADCHS->CLR_STAT0 = status;
+  adc_fifo_observe_level(status);
   stream_contract->adc_fifo_overflow_count++;
-  stream_contract->stream_poison_count++;
-  stream_contract->capture_halted = 1;
-  stream_contract->stream_poisoned = 1;
-  airspy_stream_publish_barrier();
-  stream_contract->mode = AIRSPY_STREAM_MODE_POISONED;
-  airspy_stream_publish_barrier();
-  signal_sev();
+  LPC_ADCHS->CLR_STAT0 = status;
 }
 
 void adchs_isr(void)
@@ -881,7 +896,7 @@ void adchs_isr(void)
   const uint32_t status = LPC_ADCHS->STATUS0;
   if ((status & STAT0_FIFO_OVERFLOW) != 0)
   {
-    adc_stream_poison_fifo(status);
+    adc_stream_note_fifo_overflow(status);
     return;
   }
   adc_fifo_observe_level(status);
@@ -940,14 +955,12 @@ void dma_isr(void)
   const uint32_t adc_status = LPC_ADCHS->STATUS0;
 
   adc_fifo_observe_level(adc_status);
-  if ((adc_status & STAT0_FIFO_OVERFLOW) != 0
-    && stream_contract->mode == AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER)
-  {
-    adc_stream_poison_fifo(adc_status);
-  }
-
   if (adc_status != 0)
   {
+    if ((adc_status & STAT0_FIFO_OVERFLOW) != 0)
+    {
+      stream_contract->adc_fifo_overflow_count++;
+    }
     LPC_ADCHS->CLR_STAT0 = adc_status;
     if (adc_status & STAT0_DSCR_ERROR)
     {
@@ -1051,6 +1064,7 @@ void dma_isr(void)
       const uint32_t completed_slot = adc_ring_completed_index;
       const uint32_t completed_index =
         adc_ring_slot_bank[completed_slot];
+      const uint32_t completed_bit = 1u << completed_index;
       volatile airspy_stream_buffer_record_t* const completed =
         &stream_contract->buffers[completed_index];
       uint32_t generation = adc_ring_generation + 1u;
@@ -1064,7 +1078,7 @@ void dma_isr(void)
        * field says USB still owns it, steering state is corrupt; do not hide
        * that as an ordinary congestion discard.
        */
-      if (adc_ring_usb_owned(completed))
+      if ((adc_ring_available_mask & completed_bit) == 0)
       {
         completed->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
         stream_contract->dma_error_count++;
@@ -1074,25 +1088,24 @@ void dma_isr(void)
       completed->dma_start_cycles = adc_ring_last_completion_cycles;
       completed->dma_complete_cycles = now;
 #endif
-      if (completed->produced_generation != completed->retired_generation)
+      if ((adc_ring_ready_mask & completed_bit) != 0)
       {
-        if ((completed->flags
-          & AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD) == 0)
+        if ((adc_ring_discard_mask & completed_bit) == 0)
         {
           completed->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
           stream_contract->dma_error_count++;
           stream_contract->ownership_overwrite_count++;
         }
       }
-      completed->flags = 0;
+      adc_ring_discard_mask &= ~completed_bit;
       airspy_stream_publish_barrier();
       completed->produced_generation = generation;
-      adc_ring_ready_mask |= 1u << completed_index;
-      stream_contract->capture_generation = generation;
-      stream_contract->capture_completed++;
-      if (elapsed > stream_contract->maximum_completion_cycles)
+      adc_ring_produced_generation[completed_index] = generation;
+      adc_ring_ready_mask |= completed_bit;
+      adc_ring_capture_completed++;
+      if (elapsed > adc_ring_maximum_completion_cycles)
       {
-        stream_contract->maximum_completion_cycles = elapsed;
+        adc_ring_maximum_completion_cycles = elapsed;
       }
 
       /*
@@ -1107,7 +1120,7 @@ void dma_isr(void)
       const uint32_t current_index =
         adc_ring_slot_bank[current_slot];
       const uint32_t committed_group = adc_ring_slave_group(
-        stream_contract->buffers[current_index].address);
+        adc_ring_bank_address[current_index]);
       const uint32_t target_slot =
         adc_ring_next_index(current_slot);
       uint32_t destination_index = AIRSPY_STREAM_BUFFER_COUNT;
@@ -1120,7 +1133,7 @@ void dma_isr(void)
        */
       if (adc_ring_available_count == 2u
         && (adc_ring_reserved_mask & (1u << completed_index)) == 0
-        && adc_ring_slave_group(completed->address) != committed_group)
+        && adc_ring_bank_group[completed_index] != committed_group)
       {
         destination_index = completed_index;
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
@@ -1161,10 +1174,9 @@ void dma_isr(void)
       }
       else
       {
-        volatile airspy_stream_buffer_record_t* const destination =
-          &stream_contract->buffers[destination_index];
         const uint32_t destination_group =
-          adc_ring_slave_group(destination->address);
+          adc_ring_bank_group[destination_index];
+        const uint32_t destination_bit = 1u << destination_index;
         if (destination_group == committed_group)
         {
           stream_contract->steering_alternation_violations++;
@@ -1175,14 +1187,12 @@ void dma_isr(void)
           stream_contract->steering_group_skips++;
         }
 #endif
-        if (destination->produced_generation
-          != destination->retired_generation)
+        if ((adc_ring_ready_mask & destination_bit) != 0)
         {
-          adc_ring_ready_mask &= ~(1u << destination_index);
-          destination->flags |=
-            AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD;
-          stream_contract->steering_overwrites++;
-          stream_contract->backpressure_discontinuity_count++;
+          adc_ring_ready_mask &= ~destination_bit;
+          adc_ring_discard_mask |= destination_bit;
+          adc_ring_steering_overwrites++;
+          adc_ring_backpressure_discontinuities++;
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
           if (stream_contract->steering_overwrite_run_current == 0)
           {
@@ -1205,7 +1215,7 @@ void dma_isr(void)
 #endif
 
         ADCHS_DMA_steer_ring_slot(
-          target_slot, destination->address);
+          target_slot, adc_ring_bank_address[destination_index]);
         adc_ring_slot_bank[target_slot] = destination_index;
         adc_ring_reserved_mask |= 1u << destination_index;
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
@@ -1218,7 +1228,6 @@ void dma_isr(void)
         adc_ring_next_index(completed_slot);
       adc_ring_last_completion_cycles = now;
       service_adc_submission_grants();
-      adc_ring_record_depth();
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
       const uint32_t steering_cycles = SCS_DWT_CYCCNT - now;
       if (steering_cycles > stream_contract->steering_isr_cycles_maximum)
@@ -1332,9 +1341,24 @@ void m0core_isr(void)
 void m0_startup(void)
 {
   uint32_t *src, *dest;
+  uint8_t* byte_src;
+  volatile uint8_t* byte_dest;
 
   /* Halt M0 core (in case it was running) */
   ipc_halt_m0();
+
+  /*
+   * M0APP can reach the M0-subsystem SRAM through its bridge. Keep only the
+   * deliberately slow I2C wait functions there; the main M0 image remains in
+   * AHB SRAM. Copy this section before releasing M0APP from reset.
+   */
+  byte_dest = (volatile uint8_t*)0x18000000u;
+  for (byte_src = &m0_i2c_wait_bin[0];
+    byte_src < &m0_i2c_wait_bin[0] + m0_i2c_wait_bin_size;)
+  {
+    *byte_dest++ = *byte_src++;
+  }
+  airspy_stream_publish_barrier();
 
   /* Copy M0 code from M4 embedded addr to final addr M0 */
   dest = &cm0_exec_baseaddr;
@@ -1418,6 +1442,7 @@ int main(void)
   {
     signal_wfe();
 
+    adc_ring_publish_telemetry();
     service_gpdma_probe();
     service_adc_recovery();
 

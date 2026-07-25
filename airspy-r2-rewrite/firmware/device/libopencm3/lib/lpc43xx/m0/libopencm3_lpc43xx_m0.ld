@@ -33,6 +33,16 @@ ENTRY(reset_handler)
 /* Define sections. */
 SECTIONS
 {
+	.m0sub_i2c_wait : ALIGN(4) {
+		_m0sub_i2c_wait_start = .;
+		KEEP(*(.m0sub_i2c_wait))
+		_m0sub_i2c_wait_end = .;
+	} >ram_local_m0sub
+	ASSERT(SIZEOF(.m0sub_i2c_wait) > 0,
+		"M0SUB I2C wait section is unexpectedly empty")
+	ASSERT(SIZEOF(.m0sub_i2c_wait) <= LENGTH(ram_local_m0sub),
+		"M0SUB I2C wait section exceeds subsystem SRAM")
+
 	. = ORIGIN(ram_ahb2);
 
 	.text : {

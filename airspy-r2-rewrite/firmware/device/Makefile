@@ -28,21 +28,27 @@ all: build
 
 build: airspy_fw
 
-airspy_fw:
+libopencm3:
+	$(Q)printf "  BUILD   libopencm3\n"
+	$(Q)$(MAKE) -C libopencm3
+
+airspy_fw: libopencm3
 	$(Q)for i in $(TARGETS); do \
 		if [ -d $$i ]; then \
 			printf "  BUILD   $$i\n"; \
-			$(MAKE) -C $$i || exit $?; \
+			$(MAKE) -C $$i || exit $$?; \
 		fi; \
 	done
 
 clean:
+	$(Q)printf "  CLEAN   libopencm3\n"
+	$(Q)$(MAKE) -C libopencm3 clean
 	$(Q)for i in $(addprefix lib/,$(TARGETS)) \
 		     $(TARGETS); do \
 		if [ -d $$i ]; then \
 			printf "  CLEAN   $$i\n"; \
-			$(MAKE) -C $$i clean || exit $?; \
+			$(MAKE) -C $$i clean || exit $$?; \
 		fi; \
 	done
 
-.PHONY: build airspy_fw
+.PHONY: build libopencm3 airspy_fw clean

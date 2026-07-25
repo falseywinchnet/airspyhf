@@ -35,6 +35,9 @@ CFLAGS		= -O2 -g3 \
 		  -mcpu=cortex-m4 -mthumb -Wstrict-prototypes \
 		  -ffunction-sections -fdata-sections -MD \
 		  $(FP_FLAGS) -DLPC43XX -DLPC43XX_M4
+ifeq ($(RELEASE),1)
+CFLAGS		:= $(filter-out -g%,$(CFLAGS))
+endif
 
 ARFLAGS		= rcs
 

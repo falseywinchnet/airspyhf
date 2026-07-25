@@ -220,13 +220,25 @@ typedef struct {
     uint32_t sample_rate;
     uint64_t host_dropped_samples;
     aob_stream_telemetry telemetry;
+    /*
+     * Instrumented-vanilla path. Stock airspyone_firmware has no 0x87
+     * telemetry, so when that request stalls the helper falls back to vendor
+     * command 28, which the instrumentation patch in
+     * airspy-r2-research/upstream/airspyone_firmware adds to expose the ADCHS
+     * FIFO overflow counter vanilla already keeps but never reports.
+     *
+     * This is the only counter vanilla can supply. Every other field above is
+     * meaningless when vanilla_valid is set, and must not be displayed then.
+     */
+    uint32_t vanilla_valid;
+    uint32_t vanilla_fifo_overflow;
 } aob_monitor_snapshot;
 #pragma pack(pop)
 
 #if !defined(_MSC_VER)
 _Static_assert(sizeof(aob_stream_telemetry) == 940,
                "bridge and firmware stream contracts must agree");
-_Static_assert(sizeof(aob_monitor_snapshot) == 984,
+_Static_assert(sizeof(aob_monitor_snapshot) == 992,
                "monitor wire layout changed unexpectedly");
 #endif
 

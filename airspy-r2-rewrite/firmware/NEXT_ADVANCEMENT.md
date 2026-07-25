@@ -1,8 +1,9 @@
 # Firmware next advancement
 
-Status: V7 release build flashed and byte-verified on R2 and Mini
+Status: V8 withdrawn; V9 release flashed and byte-verified on R2 and Mini
 Baseline: ten-bank steered ring, M4-only grants, M0 retirement ring
 Wire compatibility: unchanged legacy Airspy One API and headerless sample stream
+Driver requirement: the armed start sequence, from libairspy 1.0.12 onward
 
 ## Implementation result
 
@@ -25,6 +26,148 @@ All approved items landed in V7:
 
 The stream contract is version 9. The sample stream and public API are
 unchanged.
+
+### V8: shorten the boundary and isolate synchronous polling
+
+V8 is withdrawn. During a sustained R2 session it reached 787,878 captured
+banks but accumulated 12 ADC FIFO overflow/poison epochs with no DMA error,
+USB error, backpressure, stale completion, or ownership fault. SDR++ restarted
+the transport, but the unknown-length ADC loss changed the Fs/4 phase and
+produced visibly and audibly corrupt output. The Mini remained clean.
+
+The experimental split GPDMA path was the only new sustained transfer behavior:
+peripheral source on Master 1 and SRAM destination on Master 0. Although the
+register combination is legal, its long-duration behavior on this integration
+is not documented or qualified. V9 restores the V7/V7b Master-1/Master-1 path.
+
+V8 keeps every value that controls the next capture action in the DMA ISR:
+poison and recovery state, ownership masks, retirement consumption, destination
+selection, grants, and generation publication. Stable addresses, generation
+comparisons, discard history, and scalar counters now use M4-local shadows.
+The main loop only publishes already-captured telemetry. In particular, the ISR
+still samples `FIFO_STS` and updates a local max-hold; the main loop never tries
+to reconstruct a peak after it has disappeared. The normal release boundary is
+reduced from 32 unconditional shared-contract accesses to approximately ten,
+plus the ownership publications required by actual retire/grant activity.
+
+The six I2C wait functions are a separate 456-byte M0 image copied to
+M0SUB SRAM at `0x18000000` before M0APP starts. Calls are long-call veneers and
+the ordinary M0 binary excludes the section. This deliberately confines only
+the polling loops—not all of M0—to the slower bridge path, reducing traffic on
+the AHB SRAM slave shared by M0 execution and a capture bank. Four-NOP poll
+spacing and the wall-clock-calibrated 6,364-iteration timeout are retained.
+
+V8 splits the GPDMA data path. UM10503 Table 350 proves that peripheral reads
+must use Master 1, so ADCHS source remains on Master 1 while SRAM destination
+uses Master 0. The two GPDMA interfaces can therefore service opposite sides of
+the transfer instead of serializing both through Master 1. The first-start FIFO
+poison occurred identically with this split, the old Master-1/Master-1 path,
+and V7b; it is the pre-existing synchronous live-tune fault described below,
+not evidence against the split.
+
+V8 also fixes a separate cold-start violation. `ADCHS_init()` formerly enabled
+the ADC core and bandgap and could trigger conversion immediately. UM10503
+section 48.7.2 requires `RECOVERY_TIME/fADC` plus 100 us for the bandgap and
+10 us for ADC power. A 10,000-iteration delay provides about 147 us on the
+204 MHz R2 and 250 us on the 120 MHz Mini. This removed the paired cold-start
+ADC over/under-range flags.
+
+The remaining startup FIFO poison is now localized but not fixed. The host
+tool calls `airspy_start_rx()` and only then `airspy_set_freq()`. M0 services
+`AIRSPY_SET_FREQ` synchronously, and `r820t_set_freq()` performs the tracking
+filter plus PLL I2C sequence while 10 MS/s capture is live. `OPTIM_SET_MUX` is
+not enabled, so an unchanged band still repeats all six tracking-filter writes.
+On cold-reset trials the FIFO overflow arrived after 4–6 banks, exactly during
+this post-start control burst. Relocating only the six polling loops is
+insufficient. The next fix must either arrange the initial tune before RX or
+make live tuner programming cooperative/nonblocking; it must not weaken FIFO
+poison semantics.
+
+### V9: qualified DMA path and cached tuner mux
+
+V9 retains the boundary reduction, ISR-owned control state, FIFO max-hold,
+M0SUB I2C wait functions, and ADC stabilization delay. It makes two changes:
+
+- GPDMA source and destination both use Master 1, restoring the V7/V7b path.
+- `OPTIM_SET_MUX` is enabled. Same-band retunes skip six redundant
+  tracking-filter/mux writes and retain the necessary PLL programming.
+
+`OPTIM_SET_MUX` does not solve the first-start FIFO event. The immediate
+post-start 100 MHz request still performs roughly six PLL-side writes, and the
+R2 reproduced one FIFO poison after three banks. The define reduces ordinary
+same-band live-tune exposure but is not represented as a startup repair.
+
+### V7b: throttle M0's I2C polling bursts
+
+R820T vendor requests run synchronously on M0. The six I2C start, transmit, and
+receive wait loops formerly issued an instruction fetch and APB status read on
+every tight-loop iteration, up to 10,000 observations per byte. V7b inserts four
+fixed NOPs before every subsequent status observation. It deliberately does not
+use WFE because I2C completion is polled and no reliable wake event is part of
+this path.
+
+The timeout iteration count is recalibrated from 10,000 to 6,364: the original
+loop was approximately seven core cycles and the four NOPs make it approximately
+eleven, so `ceil(10000 * 7 / 11)` preserves the approximate wall-clock timeout.
+Exit conditions, ACK/NACK selection, I2C clocking, and the R820T register sequence
+are unchanged. Inspection of the linked M0 image confirms the spacing and new
+bound in all six functions. This lowers the instantaneous M0/APB request rate
+during tuner writes; it does not eliminate the underlying shared-slave
+contention.
+
+The build now rebuilds all three bundled libopencm3 archives before linking.
+Previously, changing `libopencm3/lib/lpc43xx/i2c.c` and running the ordinary
+firmware build could silently relink the old archive. `RELEASE=1` also removes
+debug flags from those library objects.
+
+### M0/capture placement result: no clean placement
+
+The release link maps confirm option (b): M0 execution cannot be separated from
+every capture bank without giving up a bank or the reserved ETB region.
+
+- M0 runs at `0x2000c000` and consumes 16,332 of its 16,384-byte runtime region.
+- Capture bank 8 occupies `0x20008000`; the device block diagram groups these two
+  adjacent 16 KiB AHB SRAM blocks under one slave entry.
+- S2 has only its 8 KiB qualified metadata tail free, too small for M0 or a
+  16 KiB capture bank.
+- S3 contains bank 0 and fixed ADC/USB structures.
+- S1 has about 20 KiB free above the shared mailboxes, but it already holds M4
+  execution and four capture banks. Moving M0 or bank 8 there merely moves the
+  long-burst collision onto S1 and changes the proven 4/4/1/1 distribution to
+  5/4/1; it does not produce a genuinely independent execution slave.
+- M0SUB SRAM at `0x18000000` remains excluded for the complete M0 image because
+  its bridge would add latency to every M0 access. V8 uses it only for the six
+  intentionally slow I2C polling loops.
+
+The V7 4/4/1/1 placement is therefore unchanged, and
+`firmware.steering_model` still passes.
+
+### The armed start is required, not an extension
+
+V7 ships with libairspy 1.0.12 and requires its two-step start:
+
+```text
+RECEIVER_MODE_ARMED   endpoint enabled, ADC stopped
+                      host allocates and submits all 16 transfers
+RECEIVER_MODE_RX      capture begins into an already-queued host
+```
+
+A legacy one-step `RECEIVER_MODE_RX` starts the ADC before the host has queued
+anything, and only the eight-bank ring covers the gap: 3.3 ms at 10 MSPS against
+5.5 ms at 6. Sixteen 256 KiB allocations plus sixteen submits do not reliably fit
+in 3.3 ms, so a stock driver can overflow the FIFO during its own startup and be
+poisoned before delivering a sample. This is observable: SDR++ against stock
+libairspy 1.0.10 fails to launch at 10 MSPS, while SDR# through the bridge
+against 1.0.12 does not, because the armed start removes the window entirely.
+
+This is a deliberate compatibility break, not a regression to fix. A receiver
+that cannot accept 40 MB/s from the first sample is not supported. The firmware
+therefore does **not** gate the poison on first delivery; arming at capture start
+is correct given the driver requirement.
+
+The consequence to keep in view: any path that restarts capture without
+re-arming has the same exposure. Sample-rate changes and stop/start cycles must
+go through ARMED, not straight to RX.
 
 ## Objective
 

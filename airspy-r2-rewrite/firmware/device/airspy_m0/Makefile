@@ -22,6 +22,7 @@
 #
 
 BINARY = airspy_m0
+OBJCOPY_BIN_FLAGS = --remove-section=.m0sub_i2c_wait
 
 SRC = $(BINARY).c\
 	airspy_rx.c \
@@ -52,3 +53,6 @@ SRC += \
 LDSCRIPT = ../common/LPC4370_M0_ram_only.ld
 
 include ../common/Makefile_M0_inc.mk
+
+airspy_m0_i2c_wait.bin: airspy_m0.elf
+	$(Q)$(OBJCOPY) --only-section=.m0sub_i2c_wait -Obinary $< $@
