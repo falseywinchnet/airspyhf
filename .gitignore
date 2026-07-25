@@ -5,3 +5,4 @@ Cargo.lock
 /install*/
 libairspyhf/recovered-airspyhf-musl/
 .toolchains/
+.toolchains/
