@@ -419,14 +419,6 @@ static uint32_t adc_ring_choose_destination(
 
 static void adc_ring_publish_telemetry(void)
 {
-#ifndef DMA_ISR_DEBUG
-  /*
-   * Release builds report nothing. The contract keeps its layout so the host
-   * request still answers with a well-formed, zeroed structure rather than
-   * stalling, but no counter is maintained and nothing is published.
-   */
-  return;
-#endif
   /*
    * These values are observational, not ownership authorities. Publish them
    * from the WFE-driven main context so the DMA boundary touches only state
@@ -858,7 +850,6 @@ void adchs_stop(void)
 
 static void adc_fifo_observe_level(const uint32_t status)
 {
-#ifdef DMA_ISR_DEBUG
   uint32_t level = LPC_ADCHS->FIFO_STS & FIFO_STS_LEVEL_MASK;
   if (level == 0 && (status & STAT0_FIFO_EMPTY) == 0)
   {
@@ -869,15 +860,6 @@ static void adc_fifo_observe_level(const uint32_t status)
   {
     adc_fifo_level_high_water = level;
   }
-#else
-  /*
-   * Sampling FIFO_STS costs an APB read on a path measured in tenths of a
-   * microsecond, and a level sampled once per bank boundary cannot catch a
-   * sub-microsecond peak anyway, so the number it produced was never worth
-   * what it cost. Nothing outside diagnostics reads it.
-   */
-  (void)status;
-#endif
 }
 
 static void adc_stream_note_fifo_overflow(const uint32_t status)
@@ -905,9 +887,7 @@ static void adc_stream_note_fifo_overflow(const uint32_t status)
    * converted a survivable event into a dead radio, which is strictly worse.
    */
   adc_fifo_observe_level(status);
-#ifdef DMA_ISR_DEBUG
   stream_contract->adc_fifo_overflow_count++;
-#endif
   LPC_ADCHS->CLR_STAT0 = status;
 }
 
@@ -977,16 +957,11 @@ void dma_isr(void)
   adc_fifo_observe_level(adc_status);
   if (adc_status != 0)
   {
-    /*
-     * Clearing the status is required; counting what it said is not. The
-     * clear stays unconditional so a set bit can never latch the interrupt on.
-     */
-    LPC_ADCHS->CLR_STAT0 = adc_status;
-#ifdef DMA_ISR_DEBUG
     if ((adc_status & STAT0_FIFO_OVERFLOW) != 0)
     {
       stream_contract->adc_fifo_overflow_count++;
     }
+    LPC_ADCHS->CLR_STAT0 = adc_status;
     if (adc_status & STAT0_DSCR_ERROR)
     {
       stream_contract->adc_descriptor_error_count++;
@@ -999,7 +974,6 @@ void dma_isr(void)
     {
       stream_contract->adc_underrange_count++;
     }
-#endif
   }
 
   /*
@@ -1104,19 +1078,16 @@ void dma_isr(void)
        * field says USB still owns it, steering state is corrupt; do not hide
        * that as an ordinary congestion discard.
        */
-#ifdef DMA_ISR_DEBUG
       if ((adc_ring_available_mask & completed_bit) == 0)
       {
         completed->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
         stream_contract->dma_error_count++;
         stream_contract->ownership_overwrite_count++;
       }
-#endif
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
       completed->dma_start_cycles = adc_ring_last_completion_cycles;
       completed->dma_complete_cycles = now;
 #endif
-#ifdef DMA_ISR_DEBUG
       if ((adc_ring_ready_mask & completed_bit) != 0)
       {
         if ((adc_ring_discard_mask & completed_bit) == 0)
@@ -1126,7 +1097,6 @@ void dma_isr(void)
           stream_contract->ownership_overwrite_count++;
         }
       }
-#endif
       adc_ring_discard_mask &= ~completed_bit;
       airspy_stream_publish_barrier();
       completed->produced_generation = generation;
@@ -1209,10 +1179,7 @@ void dma_isr(void)
         const uint32_t destination_bit = 1u << destination_index;
         if (destination_group == committed_group)
         {
-#ifdef DMA_ISR_DEBUG
           stream_contract->steering_alternation_violations++;
-#endif
-          (void)destination_group;
         }
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
         if (destination_index != adc_ring_slot_bank[target_slot])

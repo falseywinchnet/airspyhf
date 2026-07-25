@@ -546,6 +546,11 @@ static void serve_control(int fd)
         }
         case AOB_OP_SI5351C_WRITE:
         case AOB_OP_R820T_WRITE: {
+            if (verbose && input && request.in_len >= 2) {
+                LOG("   %s reg=0x%02x value=0x%02x",
+                    request.op == AOB_OP_R820T_WRITE ? "r820t" : "si5351c",
+                    input[0], input[1]);
+            }
             if (!device || !input || request.in_len < 2) result = AIRSPY_ERROR_INVALID_PARAM;
             else if (request.op == AOB_OP_SI5351C_WRITE)
                 result = airspy_si5351c_write(device, input[0], input[1]);
@@ -562,6 +567,11 @@ static void serve_control(int fd)
                 result = airspy_si5351c_read(device, input[0], &value);
             else
                 result = airspy_r820t_read(device, input[0], &value);
+            if (verbose && input) {
+                LOG("   %s READ reg=0x%02x -> 0x%02x",
+                    request.op == AOB_OP_R820T_READ ? "r820t" : "si5351c",
+                    input[0], value);
+            }
             reply(fd, result, &value, sizeof(value));
             break;
         }

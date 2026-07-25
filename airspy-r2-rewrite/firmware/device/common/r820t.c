@@ -424,9 +424,10 @@ static int r820t_read(r820t_priv_t *priv, uint8_t *val, int len)
  */
 #define OPTIM_SET_MUX 1
 
-#ifdef OPTIM_SET_MUX
-int r820t_set_mux_freq_idx = -1; /* Default set to invalid value in order to force set_mux */
-#endif
+/* Default set to invalid value in order to force set_mux.
+   Defined unconditionally so callers that invalidate it need not know whether
+   OPTIM_SET_MUX is enabled; with it disabled the value is simply unused. */
+int r820t_set_mux_freq_idx = -1;
 
 /*
 "inspired by Mauro Carvalho Chehab set_mux technique"
@@ -455,12 +456,30 @@ static int r820t_set_tf(r820t_priv_t *priv, uint32_t freq)
     rc = r820t_write_reg_mask(priv, 0x17, range->open_d, 0x08);
     if (rc < 0)
       return rc;
+#ifdef OPTIM_SET_MUX
+  }
 
+  /*
+   * RF_MUX,Polymux is written on every tune, even when the band is unchanged,
+   * because the host owns it too. SDR# disables the tracking filter by
+   * read-modify-writing 0x1a after each set_freq, and re-enables it by writing
+   * nothing at all and relying on this restore. Skipping it here leaves the
+   * host's bypass latched, so the tracking filter control appears dead. The
+   * other five writes below stay behind the band check; this costs one I2C
+   * register write per tune instead of six.
+   */
+  {
+#endif
     /* RF_MUX,Polymux */
     rc = r820t_write_reg_mask(priv, 0x1a, range->rf_mux_ploy, 0xc3);
     if (rc < 0)
       return rc;
+#ifdef OPTIM_SET_MUX
+  }
 
+  if(freq_idx != r820t_set_mux_freq_idx)
+  {
+#endif
     /* TF BAND */
     rc = r820t_write_reg(priv, 0x1b, range->tf_c);
     if (rc < 0)
