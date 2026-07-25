@@ -27,6 +27,12 @@ enum {
     ROW_USB_PARTIAL,
     ROW_USB_BACKPRESSURE,
     ROW_BACKPRESSURE_LOSS,
+    ROW_STEERING_DISCARDS,
+    ROW_STEERING_RUNS,
+    ROW_STEERING_MINIMUM_AVAILABLE,
+    ROW_STEERING_ALTERNATION,
+    ROW_STEERING_NO_CANDIDATE,
+    ROW_STALE_COMPLETIONS,
     ROW_USB_CONTROLLER_ERRORS,
     ROW_USB_BUS_RESETS,
     ROW_SUSPEND_LOSS,
@@ -121,7 +127,7 @@ static NSString *mode_name(uint32_t mode)
     _values = [NSMutableArray arrayWithCapacity:ROW_COUNT];
 
     _window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(100, 100, 480, 612)
+        initWithContentRect:NSMakeRect(100, 100, 480, 756)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable
@@ -134,9 +140,9 @@ static NSString *mode_name(uint32_t mode)
 
     NSView *content = _window.contentView;
     _status = [self labelWithText:@"Connecting to helper…"
-                            frame:NSMakeRect(18, 570, 444, 22) bold:YES];
+                            frame:NSMakeRect(18, 714, 444, 22) bold:YES];
     _session = [self labelWithText:@""
-                             frame:NSMakeRect(18, 548, 444, 20) bold:NO];
+                             frame:NSMakeRect(18, 692, 444, 20) bold:NO];
     [content addSubview:_status];
     [content addSubview:_session];
 
@@ -156,6 +162,12 @@ static NSString *mode_name(uint32_t mode)
         @"USB partial transfers",
         @"USB queue backpressure",
         @"Backpressure sample-loss events",
+        @"Deliberately discarded banks",
+        @"Consecutive discard runs",
+        @"Minimum reusable banks",
+        @"SRAM alternation violations",
+        @"No-candidate steering faults",
+        @"Stale-generation completions",
         @"USB controller error IRQs",
         @"USB bus resets",
         @"Suspend discontinuities",
@@ -163,7 +175,7 @@ static NSString *mode_name(uint32_t mode)
         @"Ownership overwrites"
     ];
 
-    CGFloat y = 518;
+    CGFloat y = 662;
     for (NSUInteger index = 0; index < names.count; ++index, y -= 24) {
         NSTextField *name = [self labelWithText:names[index]
                                           frame:NSMakeRect(24, y, 325, 20)
@@ -360,6 +372,18 @@ static NSString *mode_name(uint32_t mode)
            value:DELTA(usb_backpressure) fault:YES];
     [self setRow:ROW_BACKPRESSURE_LOSS
            value:DELTA(backpressure_discontinuity_count) fault:YES];
+    [self setRow:ROW_STEERING_DISCARDS
+           value:DELTA(steering_overwrites) fault:NO];
+    [self setRow:ROW_STEERING_RUNS
+           value:DELTA(steering_overwrite_runs) fault:NO];
+    [self setRow:ROW_STEERING_MINIMUM_AVAILABLE
+           value:c->steering_minimum_available fault:NO];
+    [self setRow:ROW_STEERING_ALTERNATION
+           value:DELTA(steering_alternation_violations) fault:YES];
+    [self setRow:ROW_STEERING_NO_CANDIDATE
+           value:DELTA(steering_no_candidate_faults) fault:YES];
+    [self setRow:ROW_STALE_COMPLETIONS
+           value:DELTA(stale_generation_completions) fault:YES];
     [self setRow:ROW_USB_CONTROLLER_ERRORS
            value:DELTA(usb_controller_error_irq_count) fault:YES];
     [self setRow:ROW_USB_BUS_RESETS

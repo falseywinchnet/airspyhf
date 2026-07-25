@@ -83,8 +83,14 @@ static uint32_t m0_cycle_elapsed(const uint32_t started)
 }
 #endif
 
-static uint32_t adc_stream_next_submit_index;
 static uint32_t adc_stream_failed_recovery_generation;
+
+static int adc_stream_generation_older(
+  const uint32_t candidate,
+  const uint32_t selected)
+{
+  return (int32_t)(candidate - selected) < 0;
+}
 
 enum {
   /*
@@ -177,7 +183,6 @@ static void adc_stream_recover(const uint32_t request_generation)
       record->retired_generation = record->produced_generation;
     }
   }
-  adc_stream_next_submit_index = 0;
   usb_endpoint_resume(&usb_endpoint_bulk_in);
 
   stream_contract->dma_recovery_dropped_buffer_estimate += dropped_buffers;
@@ -279,6 +284,7 @@ static void adc_stream_retired(
      */
     record->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
     stream_contract->usb_errors++;
+    stream_contract->stale_generation_completions++;
     signal_sev();
     return;
   }
@@ -305,14 +311,39 @@ static void adc_stream_submit_ready(void)
   uint32_t submitted = 0;
   for (uint32_t ready = 0; ready < AIRSPY_STREAM_BUFFER_COUNT; ++ready)
   {
-    const uint32_t index = adc_stream_next_submit_index;
-    volatile airspy_stream_buffer_record_t* const record =
-      &stream_contract->buffers[index];
-    const uint32_t generation = record->produced_generation;
-    if (generation == 0 || generation == record->submitted_generation)
+    uint32_t index = AIRSPY_STREAM_BUFFER_COUNT;
+    uint32_t generation = 0;
+    for (uint32_t candidate = 0;
+      candidate < AIRSPY_STREAM_BUFFER_COUNT; ++candidate)
+    {
+      volatile airspy_stream_buffer_record_t* const candidate_record =
+        &stream_contract->buffers[candidate];
+      const uint32_t candidate_generation =
+        candidate_record->granted_generation;
+      if (candidate_generation == 0
+        || candidate_generation
+          != candidate_record->produced_generation
+        || candidate_generation
+          == candidate_record->submitted_generation)
+      {
+        continue;
+      }
+      if (index == AIRSPY_STREAM_BUFFER_COUNT
+        || adc_stream_generation_older(
+          candidate_generation, generation))
+      {
+        index = candidate;
+        generation = candidate_generation;
+      }
+    }
+
+    if (index == AIRSPY_STREAM_BUFFER_COUNT)
     {
       break;
     }
+
+    volatile airspy_stream_buffer_record_t* const record =
+      &stream_contract->buffers[index];
 
     airspy_stream_publish_barrier();
     record->submitted_generation = generation;
@@ -330,11 +361,6 @@ static void adc_stream_submit_ready(void)
     }
     stream_contract->usb_submitted++;
     submitted++;
-    adc_stream_next_submit_index++;
-    if (adc_stream_next_submit_index == AIRSPY_STREAM_BUFFER_COUNT)
-    {
-      adc_stream_next_submit_index = 0;
-    }
   }
 #ifdef AIRSPY_STREAM_WORK_TELEMETRY
   if (submitted != 0)
@@ -420,7 +446,6 @@ void ADCHS_prepare(uint8_t conf_num)
 void ADCHS_start(uint8_t conf_num)
 {
   start_stop_adchs_m4(conf_num, START_ADCHS_CMD);
-  adc_stream_next_submit_index = 0;
 }
 
 void ADCHS_stop(uint8_t conf_num)

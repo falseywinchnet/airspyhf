@@ -12,7 +12,7 @@ enum {
   AIRSPY_PID = 0x60a1,
   STREAM_TELEMETRY_REQUEST = 0x87,
   STREAM_MAGIC = 0x53424f34u,
-  STREAM_VERSION = 5,
+  STREAM_VERSION = 6,
   STREAM_MODE_ADC_FOUR_BUFFER = 2,
   STREAM_MODE_RECOVERING = 3,
   BUFFER_COUNT = 10,
@@ -25,6 +25,7 @@ typedef struct {
   uint32_t dma_start_cycles;
   uint32_t dma_complete_cycles;
   uint32_t flags;
+  uint32_t granted_generation;
   uint32_t submitted_generation;
   uint32_t retired_generation;
   uint32_t retired_bytes;
@@ -93,10 +94,25 @@ typedef struct {
   uint32_t m0_retire_cycles_total;
   uint32_t m0_retire_cycles_maximum;
   uint32_t m0_retire_count;
+  uint32_t steering_decisions;
+  uint32_t steering_overwrites;
+  uint32_t steering_overwrite_runs;
+  uint32_t steering_overwrite_run_current;
+  uint32_t steering_overwrite_run_maximum;
+  uint32_t steering_alternation_violations;
+  uint32_t steering_no_candidate_faults;
+  uint32_t steering_group_skips;
+  uint32_t steering_minimum_available;
+  uint32_t steering_minimum_groups;
+  uint32_t steering_floor_boundaries;
+  uint32_t steering_isr_cycles_maximum;
+  uint32_t maximum_capture_to_grant_age;
+  uint32_t stale_generation_completions;
+  uint32_t steering_available_histogram[BUFFER_COUNT + 1];
   buffer_record_t buffers[BUFFER_COUNT];
 } stream_contract_t;
 
-_Static_assert(sizeof(stream_contract_t) == 608,
+_Static_assert(sizeof(stream_contract_t) == 748,
   "host and firmware stream contracts must agree");
 
 static const char* stream_mode_name(const uint32_t mode)
@@ -214,6 +230,26 @@ static void print_fault_deltas(
       "  Ownership guard: overwrite attempts +%" PRIu32
         ", captures halted safely +%" PRIu32 "\n",
       DELTA(ownership_overwrite_count), DELTA(overwrite_prevented));
+  }
+  if (DELTA(steering_overwrites) != 0)
+  {
+    printf(
+      "  Steering: deliberately discarded +%" PRIu32
+        " banks in +%" PRIu32 " consecutive runs"
+        " (longest run=%" PRIu32 ")\n",
+      DELTA(steering_overwrites), DELTA(steering_overwrite_runs),
+      current->steering_overwrite_run_maximum);
+  }
+  if (DELTA(steering_alternation_violations) != 0
+    || DELTA(steering_no_candidate_faults) != 0
+    || DELTA(stale_generation_completions) != 0)
+  {
+    printf(
+      "  Steering faults: alternation +%" PRIu32
+        ", no-candidate +%" PRIu32 ", stale completion +%" PRIu32 "\n",
+      DELTA(steering_alternation_violations),
+      DELTA(steering_no_candidate_faults),
+      DELTA(stale_generation_completions));
   }
 #undef DELTA
   fflush(stdout);
@@ -376,7 +412,13 @@ int main(int argc, char** argv)
     "work cycles average/max: M4 ISR=%" PRIu32 "/%" PRIu32
       ", resume=%" PRIu32 "/%" PRIu32
       ", M0 submit=%" PRIu32 "/%" PRIu32
-      ", M0 retire=%" PRIu32 "/%" PRIu32 "\n",
+      ", M0 retire=%" PRIu32 "/%" PRIu32 "\n"
+    "steering: decisions=%" PRIu32 ", deliberate-overwrites=%" PRIu32
+      ", runs=%" PRIu32 ", longest-run=%" PRIu32
+      ", alternation/no-candidate/stale=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+      ", minimum available/groups=%" PRIu32 "/%" PRIu32
+      ", floor boundaries=%" PRIu32 ", worst cycles=%" PRIu32
+      ", maximum grant age=%" PRIu32 " banks\n",
     contract.version, stream_mode_name(contract.mode),
     contract.capture_generation, contract.capture_completed,
     contract.capture_halted, contract.overwrite_prevented,
@@ -415,7 +457,18 @@ int main(int argc, char** argv)
     contract.m0_submit_cycles_maximum,
     contract.m0_retire_count == 0 ? 0
       : contract.m0_retire_cycles_total / contract.m0_retire_count,
-    contract.m0_retire_cycles_maximum);
+    contract.m0_retire_cycles_maximum,
+    contract.steering_decisions, contract.steering_overwrites,
+    contract.steering_overwrite_runs,
+    contract.steering_overwrite_run_maximum,
+    contract.steering_alternation_violations,
+    contract.steering_no_candidate_faults,
+    contract.stale_generation_completions,
+    contract.steering_minimum_available,
+    contract.steering_minimum_groups,
+    contract.steering_floor_boundaries,
+    contract.steering_isr_cycles_maximum,
+    contract.maximum_capture_to_grant_age);
 
   if (watch)
   {
@@ -455,12 +508,14 @@ int main(int argc, char** argv)
     const buffer_record_t* const record = &contract.buffers[index];
     printf(
       "buffer %zu @ %08" PRIx32 ": produced=%" PRIu32
-        ", submitted=%" PRIu32 ", retired=%" PRIu32
+        ", granted=%" PRIu32 ", submitted=%" PRIu32 ", retired=%" PRIu32
         ", bytes=%" PRIu32 ", flags=%08" PRIx32 "\n",
       index, record->address, record->produced_generation,
+      record->granted_generation,
       record->submitted_generation, record->retired_generation,
       record->retired_bytes, record->flags);
-    if (record->produced_generation != record->submitted_generation
+    if (record->produced_generation != record->granted_generation
+      || record->granted_generation != record->submitted_generation
       || record->submitted_generation != record->retired_generation
       || record->flags != 0)
     {

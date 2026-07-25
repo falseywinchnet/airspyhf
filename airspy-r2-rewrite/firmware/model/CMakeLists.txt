@@ -7,6 +7,7 @@ endif()
 
 add_library(airspy_firmware_model STATIC
     src/buffer_model.c
+    src/steering_model.c
     src/stream_status_model.c
     src/transport_pump_model.c
     src/usb_queue_model.c)
@@ -24,3 +25,7 @@ add_test(NAME firmware.buffer_model COMMAND airspy_firmware_model_test)
 add_executable(airspy_usb_queue_model_test tests/usb_queue_model_test.c)
 target_link_libraries(airspy_usb_queue_model_test PRIVATE airspy_firmware_model)
 add_test(NAME firmware.usb_queue_model COMMAND airspy_usb_queue_model_test)
+
+add_executable(airspy_steering_model_test tests/steering_model_test.c)
+target_link_libraries(airspy_steering_model_test PRIVATE airspy_firmware_model)
+add_test(NAME firmware.steering_model COMMAND airspy_steering_model_test)

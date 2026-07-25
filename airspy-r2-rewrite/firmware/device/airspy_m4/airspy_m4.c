@@ -94,8 +94,9 @@ volatile int first_start = 0;
 static uint32_t adc_ring_completed_index;
 static uint32_t adc_ring_generation;
 static uint32_t adc_ring_last_completion_cycles;
-static uint32_t adc_ring_halted;
-static uint32_t adc_ring_protected_index;
+static uint32_t adc_ring_reserved_mask;
+static uint32_t adc_ring_slot_bank[AIRSPY_STREAM_BUFFER_COUNT];
+static uint32_t adc_ring_steer_cursor;
 
 static uint32_t adc_ring_next_index(const uint32_t index)
 {
@@ -103,46 +104,219 @@ static uint32_t adc_ring_next_index(const uint32_t index)
   return next == AIRSPY_STREAM_BUFFER_COUNT ? 0u : next;
 }
 
-static void service_adc_ring_resume(void)
+static uint32_t adc_ring_slave_group(const uint32_t address)
 {
-#ifdef AIRSPY_STREAM_WORK_TELEMETRY
-  const uint32_t started = SCS_DWT_CYCCNT;
-#endif
-  if (adc_ring_halted == 0
-    || stream_contract->mode == AIRSPY_STREAM_MODE_RECOVERING)
+  if (address >= 0x10000000u && address < 0x10020000u)
+  {
+    return 0u;
+  }
+  if (address >= 0x10080000u && address < 0x10092000u)
+  {
+    return 1u;
+  }
+  if (address >= 0x20000000u && address < 0x20008000u)
+  {
+    return 2u;
+  }
+  if (address >= 0x20008000u && address < 0x2000c000u)
+  {
+    return 3u;
+  }
+  return 0xffffffffu;
+}
+
+static uint32_t adc_ring_group_count(const uint32_t group_mask)
+{
+  uint32_t count = 0;
+  for (uint32_t group = 0; group < 4u; ++group)
+  {
+    if (group_mask & (1u << group))
+    {
+      count++;
+    }
+  }
+  return count;
+}
+
+static int adc_ring_usb_owned(
+  volatile const airspy_stream_buffer_record_t* const record)
+{
+  return record->granted_generation != record->retired_generation
+    || record->submitted_generation != record->retired_generation;
+}
+
+static int adc_ring_generation_older(
+  const uint32_t candidate,
+  const uint32_t selected)
+{
+  return (int32_t)(candidate - selected) < 0;
+}
+
+static uint32_t adc_ring_available_group_mask_after_grant(
+  const uint32_t grant_index,
+  uint32_t* const available_count)
+{
+  uint32_t group_mask = 0;
+  uint32_t count = 0;
+  for (uint32_t index = 0; index < AIRSPY_STREAM_BUFFER_COUNT; ++index)
+  {
+    volatile const airspy_stream_buffer_record_t* const record =
+      &stream_contract->buffers[index];
+    if (index != grant_index && !adc_ring_usb_owned(record))
+    {
+      group_mask |= 1u << adc_ring_slave_group(record->address);
+      count++;
+    }
+  }
+  *available_count = count;
+  return group_mask;
+}
+
+/*
+ * M4 is the only core allowed to grant a bank to USB. M0 can therefore never
+ * race a dTD claim against the steering decision. Grants are made oldest-first
+ * and stop at the arithmetic floor: the remaining non-USB-owned banks must
+ * occupy at least two distinct SRAM slave ports.
+ */
+static void service_adc_submission_grants(void)
+{
+  if (stream_contract->mode != AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER)
   {
     return;
   }
 
-  volatile airspy_stream_buffer_record_t* const protected =
-    &stream_contract->buffers[adc_ring_protected_index];
-  if (protected->produced_generation != protected->retired_generation
-    || protected->submitted_generation != protected->retired_generation)
+  uint32_t granted = 0;
+  for (;;)
   {
-    return;
+    uint32_t selected = AIRSPY_STREAM_BUFFER_COUNT;
+    uint32_t selected_generation = 0;
+    for (uint32_t index = 0; index < AIRSPY_STREAM_BUFFER_COUNT; ++index)
+    {
+      volatile const airspy_stream_buffer_record_t* const record =
+        &stream_contract->buffers[index];
+      const uint32_t generation = record->produced_generation;
+      if (generation == record->retired_generation
+        || record->granted_generation != record->retired_generation
+        || record->submitted_generation != record->retired_generation
+        || (adc_ring_reserved_mask & (1u << index)) != 0)
+      {
+        continue;
+      }
+      if (selected == AIRSPY_STREAM_BUFFER_COUNT
+        || adc_ring_generation_older(generation, selected_generation))
+      {
+        selected = index;
+        selected_generation = generation;
+      }
+    }
+
+    if (selected == AIRSPY_STREAM_BUFFER_COUNT)
+    {
+      break;
+    }
+
+    uint32_t available_count;
+    const uint32_t group_mask =
+      adc_ring_available_group_mask_after_grant(
+        selected, &available_count);
+    if (adc_ring_group_count(group_mask) < 2u)
+    {
+      break;
+    }
+
+    volatile airspy_stream_buffer_record_t* const record =
+      &stream_contract->buffers[selected];
+    const uint32_t age =
+      stream_contract->capture_generation - selected_generation;
+    if (age > stream_contract->maximum_capture_to_grant_age)
+    {
+      stream_contract->maximum_capture_to_grant_age = age;
+    }
+    airspy_stream_publish_barrier();
+    record->granted_generation = selected_generation;
+    granted++;
   }
 
-  const uint32_t adc_status = LPC_ADCHS->STATUS0;
-  if (adc_status & STAT0_FIFO_OVERFLOW)
+  if (granted != 0)
   {
-    stream_contract->adc_fifo_overflow_count++;
-    stream_contract->backpressure_discontinuity_count++;
+    airspy_stream_publish_barrier();
+    signal_sev();
   }
-  LPC_ADCHS->CLR_STAT0 = adc_status;
-  protected->flags &= ~AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
-  airspy_stream_publish_barrier();
-  LPC_GPDMA->C0CONFIG &= ~(1u << 18);
-  adc_ring_halted = 0;
-  stream_contract->capture_halted = 0;
-#ifdef AIRSPY_STREAM_WORK_TELEMETRY
-  const uint32_t elapsed = SCS_DWT_CYCCNT - started;
-  stream_contract->m4_resume_cycles_total += elapsed;
-  if (elapsed > stream_contract->m4_resume_cycles_maximum)
+}
+
+static uint32_t adc_ring_choose_destination(
+  const uint32_t committed_group)
+{
+  uint32_t selected = AIRSPY_STREAM_BUFFER_COUNT;
+  uint32_t selected_age = 0;
+  uint32_t selected_is_ready = 1;
+
+  for (uint32_t offset = 0; offset < AIRSPY_STREAM_BUFFER_COUNT; ++offset)
   {
-    stream_contract->m4_resume_cycles_maximum = elapsed;
+    const uint32_t index =
+      (adc_ring_steer_cursor + offset) % AIRSPY_STREAM_BUFFER_COUNT;
+    volatile const airspy_stream_buffer_record_t* const record =
+      &stream_contract->buffers[index];
+    if ((adc_ring_reserved_mask & (1u << index)) != 0
+      || adc_ring_usb_owned(record)
+      || adc_ring_slave_group(record->address) == committed_group)
+    {
+      continue;
+    }
+
+    const uint32_t is_ready =
+      record->produced_generation != record->retired_generation;
+    const uint32_t age = is_ready
+      ? record->produced_generation : record->retired_generation;
+    if (selected == AIRSPY_STREAM_BUFFER_COUNT
+      || is_ready < selected_is_ready
+      || (is_ready == selected_is_ready
+        && adc_ring_generation_older(age, selected_age)))
+    {
+      selected = index;
+      selected_age = age;
+      selected_is_ready = is_ready;
+    }
   }
-  stream_contract->m4_resume_count++;
-#endif
+
+  if (selected != AIRSPY_STREAM_BUFFER_COUNT)
+  {
+    adc_ring_steer_cursor = adc_ring_next_index(selected);
+  }
+  return selected;
+}
+
+static void adc_ring_record_depth(void)
+{
+  uint32_t count = 0;
+  uint32_t groups = 0;
+  for (uint32_t index = 0; index < AIRSPY_STREAM_BUFFER_COUNT; ++index)
+  {
+    volatile const airspy_stream_buffer_record_t* const record =
+      &stream_contract->buffers[index];
+    if (!adc_ring_usb_owned(record))
+    {
+      count++;
+      groups |= 1u << adc_ring_slave_group(record->address);
+    }
+  }
+  const uint32_t group_count = adc_ring_group_count(groups);
+  if (count <= AIRSPY_STREAM_BUFFER_COUNT)
+  {
+    stream_contract->steering_available_histogram[count]++;
+  }
+  if (count < stream_contract->steering_minimum_available)
+  {
+    stream_contract->steering_minimum_available = count;
+  }
+  if (group_count < stream_contract->steering_minimum_groups)
+  {
+    stream_contract->steering_minimum_groups = group_count;
+  }
+  if (count == 2u)
+  {
+    stream_contract->steering_floor_boundaries++;
+  }
 }
 
 static uint32_t stream_checksum(
@@ -456,6 +630,7 @@ static void adchs_start_internal(const uint8_t chan_num)
         &stream_contract->buffers[i];
       destinations[i] = record->address;
       record->produced_generation = 0;
+      record->granted_generation = 0;
       record->submitted_generation = 0;
       record->retired_generation = 0;
       record->retired_bytes = 0;
@@ -465,11 +640,18 @@ static void adchs_start_internal(const uint8_t chan_num)
     }
     stream_contract->capture_generation = 0;
     stream_contract->capture_halted = 0;
+    stream_contract->steering_minimum_available =
+      AIRSPY_STREAM_BUFFER_COUNT;
+    stream_contract->steering_minimum_groups = 4u;
     adc_ring_completed_index = 0;
     adc_ring_generation = 0;
     adc_ring_last_completion_cycles = SCS_DWT_CYCCNT;
-    adc_ring_halted = 0;
-    adc_ring_protected_index = 0;
+    adc_ring_reserved_mask = (1u << 0) | (1u << 1);
+    adc_ring_steer_cursor = 0;
+    for (i = 0; i < AIRSPY_STREAM_BUFFER_COUNT; ++i)
+    {
+      adc_ring_slot_bank[i] = i;
+    }
     stream_contract->mode = AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER;
     airspy_stream_publish_barrier();
     ADCHS_DMA_init_ring(destinations);
@@ -596,7 +778,6 @@ void dma_isr(void)
       request = 1;
     }
     LPC_GPDMA->C0CONFIG |= 1u << 18;
-    adc_ring_halted = 1;
     stream_contract->dma_error_count++;
     stream_contract->capture_halted = 1;
     stream_contract->last_dma_error_status = error_status;
@@ -656,23 +837,41 @@ void dma_isr(void)
     {
       const uint32_t now = SCS_DWT_CYCCNT;
       const uint32_t elapsed = now - adc_ring_last_completion_cycles;
+      const uint32_t completed_slot = adc_ring_completed_index;
+      const uint32_t completed_index =
+        adc_ring_slot_bank[completed_slot];
       volatile airspy_stream_buffer_record_t* const completed =
-        &stream_contract->buffers[adc_ring_completed_index];
+        &stream_contract->buffers[completed_index];
       uint32_t generation = adc_ring_generation + 1u;
       if (generation == 0)
       {
         generation = 1;
       }
 
-      completed->dma_start_cycles = adc_ring_last_completion_cycles;
-      completed->dma_complete_cycles = now;
-      completed->flags = 0;
-      if (completed->produced_generation != completed->retired_generation)
+      /*
+       * A bank can be in this DMA slot only if M4 left it ungranted. If either
+       * field says USB still owns it, steering state is corrupt; do not hide
+       * that as an ordinary congestion discard.
+       */
+      if (adc_ring_usb_owned(completed))
       {
         completed->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
         stream_contract->dma_error_count++;
         stream_contract->ownership_overwrite_count++;
       }
+      completed->dma_start_cycles = adc_ring_last_completion_cycles;
+      completed->dma_complete_cycles = now;
+      if (completed->produced_generation != completed->retired_generation)
+      {
+        if ((completed->flags
+          & AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD) == 0)
+        {
+          completed->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
+          stream_contract->dma_error_count++;
+          stream_contract->ownership_overwrite_count++;
+        }
+      }
+      completed->flags = 0;
       airspy_stream_publish_barrier();
       completed->produced_generation = generation;
       stream_contract->capture_generation = generation;
@@ -687,28 +886,101 @@ void dma_isr(void)
       }
 
       /*
-       * DMA is already entering the next bank. The bank after that must be
-       * free now; otherwise halt after the in-flight work and never reach it.
+       * DMA has already entered the next slot. Rewrite only the two in-memory
+       * descriptors belonging to the slot after it. The just-completed bank
+       * leaves the steering window first, so the reserve proof guarantees a
+       * legal destination on a different SRAM slave port.
        */
-      const uint32_t protected_index =
-        adc_ring_next_index(adc_ring_next_index(adc_ring_completed_index));
-      volatile airspy_stream_buffer_record_t* const protected =
-        &stream_contract->buffers[protected_index];
-      if (protected->produced_generation != protected->retired_generation
-        || protected->submitted_generation != protected->retired_generation)
+      adc_ring_reserved_mask &= ~(1u << completed_index);
+      const uint32_t current_slot =
+        adc_ring_next_index(completed_slot);
+      const uint32_t current_index =
+        adc_ring_slot_bank[current_slot];
+      const uint32_t committed_group = adc_ring_slave_group(
+        stream_contract->buffers[current_index].address);
+      const uint32_t target_slot =
+        adc_ring_next_index(current_slot);
+      const uint32_t destination_index =
+        adc_ring_choose_destination(committed_group);
+
+      if (destination_index == AIRSPY_STREAM_BUFFER_COUNT)
       {
-        protected->flags |= AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK;
-        stream_contract->overwrite_prevented++;
+        /*
+         * This is an ownership invariant failure, not host backpressure.
+         * Preserve the existing safe recovery boundary rather than direct DMA
+         * into an unknown owner.
+         */
+        uint32_t request =
+          stream_contract->recovery_request_generation + 1u;
+        if (request == 0)
+        {
+          request = 1;
+        }
+        stream_contract->steering_no_candidate_faults++;
         stream_contract->capture_halted = 1;
-        adc_ring_halted = 1;
-        adc_ring_protected_index = protected_index;
+        stream_contract->dma_error_count++;
+        stream_contract->recovery_request_generation = request;
         LPC_GPDMA->C0CONFIG |= 1u << 18;
+        airspy_stream_publish_barrier();
+        stream_contract->mode = AIRSPY_STREAM_MODE_RECOVERING;
+        signal_sev();
+      }
+      else
+      {
+        volatile airspy_stream_buffer_record_t* const destination =
+          &stream_contract->buffers[destination_index];
+        const uint32_t destination_group =
+          adc_ring_slave_group(destination->address);
+        if (destination_group == committed_group)
+        {
+          stream_contract->steering_alternation_violations++;
+        }
+        if (destination_index != adc_ring_slot_bank[target_slot])
+        {
+          stream_contract->steering_group_skips++;
+        }
+        if (destination->produced_generation
+          != destination->retired_generation)
+        {
+          destination->flags |=
+            AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD;
+          stream_contract->steering_overwrites++;
+          stream_contract->backpressure_discontinuity_count++;
+          if (stream_contract->steering_overwrite_run_current == 0)
+          {
+            stream_contract->steering_overwrite_runs++;
+          }
+          stream_contract->steering_overwrite_run_current++;
+          if (stream_contract->steering_overwrite_run_current
+            > stream_contract->steering_overwrite_run_maximum)
+          {
+            stream_contract->steering_overwrite_run_maximum =
+              stream_contract->steering_overwrite_run_current;
+          }
+        }
+        else
+        {
+          stream_contract->steering_overwrite_run_current = 0;
+        }
+
+        ADCHS_DMA_steer_ring_slot(
+          target_slot, destination->address);
+        adc_ring_slot_bank[target_slot] = destination_index;
+        adc_ring_reserved_mask |= 1u << destination_index;
+        stream_contract->steering_decisions++;
       }
 
       adc_ring_generation = generation;
       adc_ring_completed_index =
-        adc_ring_next_index(adc_ring_completed_index);
+        adc_ring_next_index(completed_slot);
       adc_ring_last_completion_cycles = now;
+      service_adc_submission_grants();
+      adc_ring_record_depth();
+      const uint32_t steering_cycles = SCS_DWT_CYCCNT - now;
+      if (steering_cycles > stream_contract->steering_isr_cycles_maximum)
+      {
+        stream_contract->steering_isr_cycles_maximum = steering_cycles;
+      }
       signal_sev();
     }
   }
@@ -901,7 +1173,7 @@ int main(void)
 
     service_gpdma_probe();
     service_adc_recovery();
-    service_adc_ring_resume();
+    service_adc_submission_grants();
 
     if(use_packing)
     {

@@ -5,7 +5,7 @@
 
 enum {
   AIRSPY_STREAM_CONTRACT_MAGIC = 0x53424f34u, /* "SBO4" */
-  AIRSPY_STREAM_CONTRACT_VERSION = 5,
+  AIRSPY_STREAM_CONTRACT_VERSION = 6,
   AIRSPY_STREAM_BUFFER_COUNT = 10,
   AIRSPY_STREAM_BUFFER_BYTES = 16 * 1024,
   AIRSPY_STREAM_MODE_LEGACY = 0,
@@ -14,6 +14,7 @@ enum {
   /* M4 halted capture; M0 is retiring transport ownership for a restart. */
   AIRSPY_STREAM_MODE_RECOVERING = 3,
   AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK = 1u << 0,
+  AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD = 1u << 1,
   AIRSPY_STREAM_GPDMA_IDLE = 0,
   AIRSPY_STREAM_GPDMA_PENDING = 1,
   AIRSPY_STREAM_GPDMA_PASSED = 2,
@@ -30,7 +31,14 @@ typedef struct {
   volatile uint32_t dma_complete_cycles;
   volatile uint32_t flags;
 
-  /* M0-owned consumption fields. */
+  /*
+   * M4 is the sole writer of granted_generation. M0 may attach a dTD only
+   * after this field equals produced_generation. This removes the cross-core
+   * race between M0 claiming a READY bank and M4 selecting it for DMA.
+   */
+  volatile uint32_t granted_generation;
+
+  /* M0-owned transport and retirement fields. */
   volatile uint32_t submitted_generation;
   volatile uint32_t retired_generation;
   volatile uint32_t retired_bytes;
@@ -134,6 +142,24 @@ typedef struct {
   volatile uint32_t m0_retire_cycles_total;
   volatile uint32_t m0_retire_cycles_maximum;
   volatile uint32_t m0_retire_count;
+
+  /* Halt-free dynamic DMA steering telemetry. */
+  volatile uint32_t steering_decisions;
+  volatile uint32_t steering_overwrites;
+  volatile uint32_t steering_overwrite_runs;
+  volatile uint32_t steering_overwrite_run_current;
+  volatile uint32_t steering_overwrite_run_maximum;
+  volatile uint32_t steering_alternation_violations;
+  volatile uint32_t steering_no_candidate_faults;
+  volatile uint32_t steering_group_skips;
+  volatile uint32_t steering_minimum_available;
+  volatile uint32_t steering_minimum_groups;
+  volatile uint32_t steering_floor_boundaries;
+  volatile uint32_t steering_isr_cycles_maximum;
+  volatile uint32_t maximum_capture_to_grant_age;
+  volatile uint32_t stale_generation_completions;
+  volatile uint32_t steering_available_histogram[
+    AIRSPY_STREAM_BUFFER_COUNT + 1];
 
   airspy_stream_buffer_record_t buffers[AIRSPY_STREAM_BUFFER_COUNT];
 } airspy_stream_contract_t;

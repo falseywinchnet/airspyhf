@@ -35,6 +35,9 @@ void ADCHS_init(void);
 void ADCHS_DMA_init(uint32_t dest_addr, uint8_t packed);
 void ADCHS_DMA_init_ring(
   const uint32_t destination_addresses[AIRSPY_STREAM_BUFFER_COUNT]);
+void ADCHS_DMA_steer_ring_slot(
+  uint32_t slot_index,
+  uint32_t destination_address);
 int GPDMA_memory_copy_probe(
   uint32_t source_addr,
   uint32_t destination_addr,

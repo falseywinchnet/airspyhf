@@ -93,7 +93,7 @@ typedef struct {
 
 #define AOB_MONITOR_MAGIC 0x414f4235u /* AOB5 */
 #define AOB_MONITOR_VERSION 1u
-#define AOB_STREAM_CONTRACT_VERSION 5u
+#define AOB_STREAM_CONTRACT_VERSION 6u
 #define AOB_STREAM_BUFFER_COUNT 10u
 
 typedef struct {
@@ -102,6 +102,7 @@ typedef struct {
     uint32_t dma_start_cycles;
     uint32_t dma_complete_cycles;
     uint32_t flags;
+    uint32_t granted_generation;
     uint32_t submitted_generation;
     uint32_t retired_generation;
     uint32_t retired_bytes;
@@ -170,6 +171,21 @@ typedef struct {
     uint32_t m0_retire_cycles_total;
     uint32_t m0_retire_cycles_maximum;
     uint32_t m0_retire_count;
+    uint32_t steering_decisions;
+    uint32_t steering_overwrites;
+    uint32_t steering_overwrite_runs;
+    uint32_t steering_overwrite_run_current;
+    uint32_t steering_overwrite_run_maximum;
+    uint32_t steering_alternation_violations;
+    uint32_t steering_no_candidate_faults;
+    uint32_t steering_group_skips;
+    uint32_t steering_minimum_available;
+    uint32_t steering_minimum_groups;
+    uint32_t steering_floor_boundaries;
+    uint32_t steering_isr_cycles_maximum;
+    uint32_t maximum_capture_to_grant_age;
+    uint32_t stale_generation_completions;
+    uint32_t steering_available_histogram[AOB_STREAM_BUFFER_COUNT + 1];
     aob_stream_buffer_record buffers[AOB_STREAM_BUFFER_COUNT];
 } aob_stream_telemetry;
 
@@ -188,9 +204,9 @@ typedef struct {
 #pragma pack(pop)
 
 #if !defined(_MSC_VER)
-_Static_assert(sizeof(aob_stream_telemetry) == 608,
+_Static_assert(sizeof(aob_stream_telemetry) == 748,
                "bridge and firmware stream contracts must agree");
-_Static_assert(sizeof(aob_monitor_snapshot) == 652,
+_Static_assert(sizeof(aob_monitor_snapshot) == 792,
                "monitor wire layout changed unexpectedly");
 #endif
 

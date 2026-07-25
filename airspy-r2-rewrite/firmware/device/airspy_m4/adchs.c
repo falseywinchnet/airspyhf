@@ -250,6 +250,26 @@ void ADCHS_DMA_init_ring(
   LPC_GPDMA->CONFIG = 0x01;
 }
 
+void ADCHS_DMA_steer_ring_slot(
+  const uint32_t slot_index,
+  const uint32_t destination_address)
+{
+  enum { HALF_BUFFER_BYTES = AIRSPY_STREAM_BUFFER_BYTES / 2 };
+  const uint32_t first = slot_index * 2u;
+
+  /*
+   * These are descriptors in SRAM, not the live C0LLI channel register.
+   * UM10503 19.6.16/19.6.19 says the controller fetches the next LLI only
+   * when the current packet completes. The caller rewrites a bank two slots
+   * ahead, leaving one complete 8 KiB packet before either word is fetched.
+   * Never write LPC_GPDMA->C0LLI while channel 0 is enabled.
+   */
+  adchs_dma_lli[first].dst_addr = destination_address;
+  adchs_dma_lli[first + 1u].dst_addr =
+    destination_address + HALF_BUFFER_BYTES;
+  airspy_stream_publish_barrier();
+}
+
 void ADCHS_init_stop(void)
 {
   /* Reset ADCHS using RGU */
