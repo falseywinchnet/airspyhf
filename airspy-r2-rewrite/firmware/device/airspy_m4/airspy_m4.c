@@ -173,10 +173,11 @@ static uint32_t adc_ring_available_group_mask_after_grant(
 }
 
 /*
- * M4 is the only core allowed to grant a bank to USB. M0 can therefore never
- * race a dTD claim against the steering decision. Grants are made oldest-first
- * and stop at the arithmetic floor: the remaining non-USB-owned banks must
- * occupy at least two distinct SRAM slave ports.
+ * The DMA ISR is the only execution context allowed to grant a bank to USB.
+ * M0 can therefore never race a dTD claim against steering, and an interrupted
+ * main-loop scan cannot commit a stale grant after the ISR reserves the same
+ * bank. Grants are made oldest-first and stop at the arithmetic floor: the
+ * remaining non-USB-owned banks must occupy at least two SRAM slave ports.
  */
 static void service_adc_submission_grants(void)
 {
@@ -1173,7 +1174,6 @@ int main(void)
 
     service_gpdma_probe();
     service_adc_recovery();
-    service_adc_submission_grants();
 
     if(use_packing)
     {

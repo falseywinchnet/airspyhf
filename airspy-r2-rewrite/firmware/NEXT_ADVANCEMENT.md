@@ -70,10 +70,11 @@ M4-only USB grants and a two-bank DMA steering window
 steering decision taken at every completed-bank boundary
 ```
 
-A bank is FREE, READY, GRANTED, or SUBMITTED. M4 is the sole writer of the
-grant field; M0 may attach a dTD only after observing that grant. This closes
-the otherwise unavoidable cross-core race between M0 claiming a READY bank and
-M4 steering DMA into it.
+A bank is FREE, READY, GRANTED, or SUBMITTED. The DMA ISR is the sole execution
+context that writes the grant field; M0 may attach a dTD only after observing
+that grant. This closes both the cross-core claim race and the subtler
+same-core race in which the DMA ISR could interrupt a main-loop grant scan,
+reserve its selected bank, and then return to a stale grant commit.
 
 The implementation examines the fixed ten-entry table rather than maintaining
 mutable cross-core free lists. This is bounded work, keeps ownership legible,

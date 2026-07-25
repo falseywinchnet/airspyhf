@@ -71,26 +71,34 @@ SRAM1 destinations with the five destinations on other SRAM slaves.
 Long-duration streaming and fault-injection qualification remain pending. See
 `../../docs/2026-07-23-hardening-pass-2-recoverable-streaming.md`.
 
-## Universal V6 halt-free steering image
+## Universal V6a halt-free steering image
 
-`airspy-ring-v6-universal-halt-free-steering.bin` is the experimental R2/Mini
-image first loaded onto R2 serial `35AC63DC2D7D704F` on 2026-07-25.
+`airspy-ring-v6a-universal-isr-only-grants.bin` is the corrected experimental
+R2/Mini image loaded onto R2 serial `35AC63DC2D7D704F` on 2026-07-25.
 
-- Image size: 22,636 bytes
+- Image size: 22,540 bytes
 - SHA-256:
-  `da34b2d0aef11ace28f42c6fae6982bde012852271f52069d293c8c585df1986`
-- The first 22,636 flash bytes were read back and matched exactly before reset.
+  `17b34a08e66ad21e1a829379fd5e14937d9d3a2eff7ebae04dd063b0303d9d6f`
+- The first 22,540 flash bytes were read back and matched exactly before reset.
 - After the firmware-owned reset request, the R2 re-enumerated at USB high
   speed and reported stream contract version 6 with clean idle counters.
 
-V6 replaces V5c's ordinary-backpressure DMA halt with future-LLI steering over
+V6a replaces V5c's ordinary-backpressure DMA halt with future-LLI steering over
 the same ten qualified 16 KiB banks. M4 is the sole writer of a new USB-grant
-generation; M0 may attach a dTD only after that grant. At least two distinct
-SRAM slave groups remain outside USB ownership. Short congestion retains
-ordered banks; at the floor, the oldest ungranted history is deliberately
-overwritten while ADC/GPDMA continue.
+generation, and the DMA ISR is the sole M4 context allowed to write it; M0 may
+attach a dTD only after that grant. At least two distinct SRAM slave groups
+remain outside USB ownership. Short congestion retains ordered banks; at the
+floor, the oldest ungranted history is deliberately overwritten while
+ADC/GPDMA continue.
 
 The stream bytes and public Airspy API are unchanged. New private telemetry
 counts deliberate steering discards separately from ownership violations,
 along with alternation failures, no-candidate faults, stale completions,
 minimum reusable depth, floor time, and worst steering cycles.
+
+`airspy-ring-v6-broken-dual-context-grant.bin` is retained only as diagnostic
+history and must not be deployed. It called the grant scan from both the DMA
+ISR and the interruptible M4 main loop. The ISR could reserve the main loop's
+selected bank before the interrupted main loop committed its older grant,
+permanently removing that bank from the reusable pool without moving an error
+counter.
