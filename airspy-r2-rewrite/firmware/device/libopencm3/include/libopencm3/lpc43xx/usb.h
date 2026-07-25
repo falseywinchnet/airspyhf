@@ -415,6 +415,10 @@ to issue an interrupt the next time it advances asynchronous schedule */
 #define USB0_USBSTS_D_PCI_SHIFT (2)
 #define USB0_USBSTS_D_PCI (1 << USB0_USBSTS_D_PCI_SHIFT)
 
+/* SEI: System error; controller AHB master fault (UM10503 Rev 1.9+). */
+#define USB0_USBSTS_D_SEI_SHIFT (4)
+#define USB0_USBSTS_D_SEI (1 << USB0_USBSTS_D_SEI_SHIFT)
+
 /* URI: USB reset received */
 #define USB0_USBSTS_D_URI_SHIFT (6)
 #define USB0_USBSTS_D_URI (1 << USB0_USBSTS_D_URI_SHIFT)
@@ -494,6 +498,10 @@ to issue an interrupt the next time it advances asynchronous schedule */
 /* PCE: Port change detect enable */
 #define USB0_USBINTR_D_PCE_SHIFT (2)
 #define USB0_USBINTR_D_PCE (1 << USB0_USBINTR_D_PCE_SHIFT)
+
+/* SEE: System error interrupt enable (UM10503 Rev 1.9+). */
+#define USB0_USBINTR_D_SEE_SHIFT (4)
+#define USB0_USBINTR_D_SEE (1 << USB0_USBINTR_D_SEE_SHIFT)
 
 /* URE: USB reset enable */
 #define USB0_USBINTR_D_URE_SHIFT (6)

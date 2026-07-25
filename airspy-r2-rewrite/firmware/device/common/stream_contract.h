@@ -5,14 +5,18 @@
 
 enum {
   AIRSPY_STREAM_CONTRACT_MAGIC = 0x53424f34u, /* "SBO4" */
-  AIRSPY_STREAM_CONTRACT_VERSION = 6,
+  AIRSPY_STREAM_CONTRACT_VERSION = 9,
   AIRSPY_STREAM_BUFFER_COUNT = 10,
+  AIRSPY_STREAM_RETIRE_QUEUE_COUNT = 16,
+  AIRSPY_STREAM_GRANT_QUEUE_COUNT = 16,
   AIRSPY_STREAM_BUFFER_BYTES = 16 * 1024,
   AIRSPY_STREAM_MODE_LEGACY = 0,
   AIRSPY_STREAM_MODE_SYNTHETIC = 1,
   AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER = 2,
   /* M4 halted capture; M0 is retiring transport ownership for a restart. */
   AIRSPY_STREAM_MODE_RECOVERING = 3,
+  /* ADC phase is unknowable after FIFO loss; transport epoch is terminated. */
+  AIRSPY_STREAM_MODE_POISONED = 4,
   AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK = 1u << 0,
   AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD = 1u << 1,
   AIRSPY_STREAM_GPDMA_IDLE = 0,
@@ -91,6 +95,26 @@ typedef struct {
   volatile uint32_t usb_port_change_count;
 
   /*
+   * Single-producer/single-consumer retirement notification ring.
+   * M0 writes entries and write_sequence after retiring a dTD. M4 consumes
+   * entries and writes read_sequence at DMA boundaries.
+   */
+  volatile uint32_t retire_queue_write_sequence;
+  volatile uint32_t retire_queue_read_sequence;
+  volatile uint32_t retire_queue_overflows;
+  volatile uint32_t retire_queue_entries[AIRSPY_STREAM_RETIRE_QUEUE_COUNT];
+
+  /*
+   * Mirrored single-producer/single-consumer grant notification ring.
+   * M4 publishes granted_generation first, then the bank index and write
+   * sequence. M0 submits exactly that bank rather than searching all records.
+   */
+  volatile uint32_t grant_queue_write_sequence;
+  volatile uint32_t grant_queue_read_sequence;
+  volatile uint32_t grant_queue_overflows;
+  volatile uint32_t grant_queue_entries[AIRSPY_STREAM_GRANT_QUEUE_COUNT];
+
+  /*
    * Recoverable capture restart handshake.
    * M4 writes request_generation while DMA is halted, then publishes
    * AIRSPY_STREAM_MODE_RECOVERING last.
@@ -105,6 +129,12 @@ typedef struct {
   volatile uint32_t dma_recovery_dropped_buffer_estimate;
   volatile uint32_t last_dma_error_status;
   volatile uint32_t backpressure_discontinuity_count;
+  volatile uint32_t stream_poisoned;
+  volatile uint32_t stream_poison_count;
+  volatile uint32_t poison_transport_terminated;
+  volatile uint32_t adc_fifo_level_high_water;
+  volatile uint32_t adc_fifo_full_observations;
+  volatile uint32_t usb_system_error_count;
 
   /*
    * M0 writes command_generation and destination_index, then signals M4.
@@ -154,7 +184,11 @@ typedef struct {
   volatile uint32_t steering_group_skips;
   volatile uint32_t steering_minimum_available;
   volatile uint32_t steering_minimum_groups;
+  volatile uint32_t steering_current_available;
+  volatile uint32_t steering_current_groups;
   volatile uint32_t steering_floor_boundaries;
+  volatile uint32_t steering_floor_fast_path_boundaries;
+  volatile uint32_t steering_full_scan_boundaries;
   volatile uint32_t steering_isr_cycles_maximum;
   volatile uint32_t maximum_capture_to_grant_age;
   volatile uint32_t stale_generation_completions;

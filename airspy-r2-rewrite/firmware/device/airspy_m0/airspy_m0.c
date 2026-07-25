@@ -85,11 +85,31 @@ static uint32_t m0_cycle_elapsed(const uint32_t started)
 
 static uint32_t adc_stream_failed_recovery_generation;
 
-static int adc_stream_generation_older(
-  const uint32_t candidate,
-  const uint32_t selected)
+static void adc_stream_publish_retirement(
+  volatile airspy_stream_buffer_record_t* const record)
 {
-  return (int32_t)(candidate - selected) < 0;
+  const uint32_t index =
+    (uint32_t)(record - &stream_contract->buffers[0]);
+  const uint32_t write =
+    stream_contract->retire_queue_write_sequence;
+  const uint32_t read =
+    stream_contract->retire_queue_read_sequence;
+  if (write - read >= AIRSPY_STREAM_RETIRE_QUEUE_COUNT)
+  {
+    /*
+     * M4 detects this counter and reconstructs its masks from the records.
+     * Never overwrite an unread queue entry and silently alias ownership.
+     */
+    stream_contract->retire_queue_overflows++;
+    signal_sev();
+    return;
+  }
+
+  stream_contract->retire_queue_entries[
+    write % AIRSPY_STREAM_RETIRE_QUEUE_COUNT] = index;
+  airspy_stream_publish_barrier();
+  stream_contract->retire_queue_write_sequence = write + 1u;
+  signal_sev();
 }
 
 enum {
@@ -220,6 +240,18 @@ static void usb_suspend_changed(const bool suspended)
 
 static void usb_bus_event(const uint32_t status)
 {
+  if (status & USB0_USBSTS_D_SEI)
+  {
+    /*
+     * System Error means the controller halted itself after an AHB-master
+     * fault. Only HCReset followed by full initialisation is valid. A whole
+     * MCU reset takes that already-hardened boot path and safely terminates
+     * every transport/capture owner.
+     */
+    stream_contract->usb_system_error_count++;
+    airspy_stream_publish_barrier();
+    cpu_reset();
+  }
   if (status & USB0_USBSTS_D_UEI)
   {
     stream_contract->usb_controller_error_irq_count++;
@@ -290,6 +322,7 @@ static void adc_stream_retired(
   }
   airspy_stream_publish_barrier();
   record->retired_generation = generation;
+  adc_stream_publish_retirement(record);
   stream_contract->usb_retired++;
 #ifdef AIRSPY_STREAM_WORK_TELEMETRY
   const uint32_t elapsed = m0_cycle_elapsed(started);
@@ -309,41 +342,32 @@ static void adc_stream_submit_ready(void)
   const uint32_t started = STK_CVR;
 #endif
   uint32_t submitted = 0;
-  for (uint32_t ready = 0; ready < AIRSPY_STREAM_BUFFER_COUNT; ++ready)
-  {
-    uint32_t index = AIRSPY_STREAM_BUFFER_COUNT;
-    uint32_t generation = 0;
-    for (uint32_t candidate = 0;
-      candidate < AIRSPY_STREAM_BUFFER_COUNT; ++candidate)
-    {
-      volatile airspy_stream_buffer_record_t* const candidate_record =
-        &stream_contract->buffers[candidate];
-      const uint32_t candidate_generation =
-        candidate_record->granted_generation;
-      if (candidate_generation == 0
-        || candidate_generation
-          != candidate_record->produced_generation
-        || candidate_generation
-          == candidate_record->submitted_generation)
-      {
-        continue;
-      }
-      if (index == AIRSPY_STREAM_BUFFER_COUNT
-        || adc_stream_generation_older(
-          candidate_generation, generation))
-      {
-        index = candidate;
-        generation = candidate_generation;
-      }
-    }
+  const uint32_t write =
+    stream_contract->grant_queue_write_sequence;
+  uint32_t read =
+    stream_contract->grant_queue_read_sequence;
+  airspy_stream_publish_barrier();
 
-    if (index == AIRSPY_STREAM_BUFFER_COUNT)
+  while (read != write)
+  {
+    const uint32_t index = stream_contract->grant_queue_entries[
+      read & (AIRSPY_STREAM_GRANT_QUEUE_COUNT - 1u)];
+    if (index >= AIRSPY_STREAM_BUFFER_COUNT)
     {
-      break;
+      stream_contract->usb_errors++;
+      cpu_reset();
     }
 
     volatile airspy_stream_buffer_record_t* const record =
       &stream_contract->buffers[index];
+    const uint32_t generation = record->granted_generation;
+    if (generation == 0
+      || generation != record->produced_generation
+      || generation == record->submitted_generation)
+    {
+      stream_contract->usb_errors++;
+      cpu_reset();
+    }
 
     airspy_stream_publish_barrier();
     record->submitted_generation = generation;
@@ -361,6 +385,9 @@ static void adc_stream_submit_ready(void)
     }
     stream_contract->usb_submitted++;
     submitted++;
+    read++;
+    airspy_stream_publish_barrier();
+    stream_contract->grant_queue_read_sequence = read;
   }
 #ifdef AIRSPY_STREAM_WORK_TELEMETRY
   if (submitted != 0)
@@ -376,6 +403,34 @@ static void adc_stream_submit_ready(void)
 #else
   (void)submitted;
 #endif
+}
+
+bool airspy_stream_requires_restart(void)
+{
+  return stream_contract->mode == AIRSPY_STREAM_MODE_POISONED;
+}
+
+static void adc_stream_terminate_poisoned_epoch(void)
+{
+  if (stream_contract->poison_transport_terminated != 0)
+  {
+    return;
+  }
+
+  /*
+   * Cancel every data-bearing dTD, preserve the endpoint toggle, then answer
+   * one pending host read with a ZLP. Stock libairspy treats that short bulk
+   * transfer as fatal, which is the required epoch boundary.
+   */
+  usb_endpoint_disable(&usb_endpoint_bulk_in);
+  usb_endpoint_resume(&usb_endpoint_bulk_in);
+  if (usb_transfer_schedule_ack(&usb_endpoint_bulk_in) != 0)
+  {
+    stream_contract->usb_errors++;
+    cpu_reset();
+  }
+  airspy_stream_publish_barrier();
+  stream_contract->poison_transport_terminated = 1;
 }
 
 __attribute__ ((always_inline)) static inline void start_stop_adchs_m4(uint8_t conf_num, uint8_t command)
@@ -529,6 +584,11 @@ int main(void)
     signal_wfe();
 
     const uint32_t stream_mode = stream_contract->mode;
+    if (stream_mode == AIRSPY_STREAM_MODE_POISONED)
+    {
+      adc_stream_terminate_poisoned_epoch();
+      continue;
+    }
     if (stream_mode == AIRSPY_STREAM_MODE_RECOVERING)
     {
       /*

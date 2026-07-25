@@ -689,7 +689,8 @@ void cpu_clock_pll1_low_speed(const airspy_pll1_ls_t* const pt_airspy_pll1_ls_co
         | CGU_PLL1_CTRL_NSEL(pll1_nsel)
         | CGU_PLL1_CTRL_MSEL(pll1_msel)
         | CGU_PLL1_CTRL_FBSEL
-        | CGU_PLL1_CTRL_DIRECT;
+        | CGU_PLL1_CTRL_DIRECT
+        | CGU_PLL1_CTRL_AUTOBLOCK;
   CGU_PLL1_CTRL = pll_reg;
   /* wait until stable */
   while (!(CGU_PLL1_STAT & CGU_PLL1_STAT_LOCK));
@@ -730,7 +731,8 @@ void cpu_clock_pll1_high_speed(const airspy_pll1_hs_t* const pt_airspy_pll1_hs_c
         | CGU_PLL1_CTRL_PSEL(pll1_psel)
         | CGU_PLL1_CTRL_NSEL(pll1_nsel)
         | CGU_PLL1_CTRL_MSEL(pll1_msel)
-        | CGU_PLL1_CTRL_FBSEL;
+        | CGU_PLL1_CTRL_FBSEL
+        | CGU_PLL1_CTRL_AUTOBLOCK;
   CGU_PLL1_CTRL = pll_reg;
 
   /* wait until stable */
@@ -756,7 +758,8 @@ void cpu_clock_pll1_high_speed(const airspy_pll1_hs_t* const pt_airspy_pll1_hs_c
         | CGU_PLL1_CTRL_NSEL(pll1_nsel)
         | CGU_PLL1_CTRL_MSEL(pll1_msel)
         | CGU_PLL1_CTRL_FBSEL
-        | CGU_PLL1_CTRL_DIRECT;
+        | CGU_PLL1_CTRL_DIRECT
+        | CGU_PLL1_CTRL_AUTOBLOCK;
   CGU_PLL1_CTRL = pll_reg;
   /* wait until stable */
   while (!(CGU_PLL1_STAT & CGU_PLL1_STAT_LOCK));

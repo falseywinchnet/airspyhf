@@ -14,8 +14,11 @@
 enum {
     ROW_CAPTURED,
     ROW_USB_RETIRED,
+    ROW_RETIRE_QUEUE_OVERFLOWS,
+    ROW_GRANT_QUEUE_OVERFLOWS,
     ROW_HOST_DROPS,
     ROW_ADC_FIFO,
+    ROW_ADC_FIFO_HIGH_WATER,
     ROW_ADC_DESCRIPTOR,
     ROW_ADC_RANGE,
     ROW_DMA_ERRORS,
@@ -23,13 +26,18 @@ enum {
     ROW_DMA_RECOVERY_FAILURES,
     ROW_DMA_DROPPED,
     ROW_USB_DTD_ERRORS,
+    ROW_USB_SYSTEM_ERRORS,
     ROW_USB_QUEUE_RECOVERIES,
     ROW_USB_PARTIAL,
     ROW_USB_BACKPRESSURE,
     ROW_BACKPRESSURE_LOSS,
+    ROW_POISONED_EPOCHS,
     ROW_STEERING_DISCARDS,
     ROW_STEERING_RUNS,
+    ROW_STEERING_CURRENT_AVAILABLE,
     ROW_STEERING_MINIMUM_AVAILABLE,
+    ROW_STEERING_FLOOR_FAST,
+    ROW_STEERING_FULL_SCAN,
     ROW_STEERING_ALTERNATION,
     ROW_STEERING_NO_CANDIDATE,
     ROW_STALE_COMPLETIONS,
@@ -87,6 +95,7 @@ static NSString *mode_name(uint32_t mode)
     case 1: return @"synthetic";
     case 2: return @"ADC ring";
     case 3: return @"recovering";
+    case 4: return @"poisoned";
     default: return @"unknown";
     }
 }
@@ -127,7 +136,7 @@ static NSString *mode_name(uint32_t mode)
     _values = [NSMutableArray arrayWithCapacity:ROW_COUNT];
 
     _window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(100, 100, 480, 756)
+        initWithContentRect:NSMakeRect(100, 100, 480, 948)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable
@@ -140,17 +149,20 @@ static NSString *mode_name(uint32_t mode)
 
     NSView *content = _window.contentView;
     _status = [self labelWithText:@"Connecting to helper…"
-                            frame:NSMakeRect(18, 714, 444, 22) bold:YES];
+                            frame:NSMakeRect(18, 906, 444, 22) bold:YES];
     _session = [self labelWithText:@""
-                             frame:NSMakeRect(18, 692, 444, 20) bold:NO];
+                             frame:NSMakeRect(18, 884, 444, 20) bold:NO];
     [content addSubview:_status];
     [content addSubview:_session];
 
     NSArray<NSString *> *names = @[
         @"Captured 16 KiB banks",
         @"USB-retired banks",
+        @"Retirement notification overflows",
+        @"Grant notification overflows",
         @"Host-driver dropped samples",
         @"ADC FIFO overflows",
+        @"Maximum ADC FIFO level (of 16)",
         @"ADC descriptor faults",
         @"ADC over / under-range",
         @"GPDMA errors",
@@ -158,13 +170,18 @@ static NSString *mode_name(uint32_t mode)
         @"GPDMA recovery failures",
         @"Estimated dropped banks",
         @"USB dTD errors",
+        @"USB controller system errors",
         @"USB queue recoveries",
         @"USB partial transfers",
         @"USB queue backpressure",
         @"Backpressure sample-loss events",
+        @"Phase-poisoned epochs",
         @"Deliberately discarded banks",
         @"Consecutive discard runs",
+        @"Current reusable banks",
         @"Minimum reusable banks",
+        @"Floor fast-path boundaries",
+        @"General mask-path boundaries",
         @"SRAM alternation violations",
         @"No-candidate steering faults",
         @"Stale-generation completions",
@@ -175,7 +192,7 @@ static NSString *mode_name(uint32_t mode)
         @"Ownership overwrites"
     ];
 
-    CGFloat y = 662;
+    CGFloat y = 854;
     for (NSUInteger index = 0; index < names.count; ++index, y -= 24) {
         NSTextField *name = [self labelWithText:names[index]
                                           frame:NSMakeRect(24, y, 325, 20)
@@ -350,10 +367,17 @@ static NSString *mode_name(uint32_t mode)
 
     [self setRow:ROW_CAPTURED value:DELTA(capture_completed) fault:NO];
     [self setRow:ROW_USB_RETIRED value:DELTA(usb_retired) fault:NO];
+    [self setRow:ROW_RETIRE_QUEUE_OVERFLOWS
+           value:DELTA(retire_queue_overflows) fault:YES];
+    [self setRow:ROW_GRANT_QUEUE_OVERFLOWS
+           value:DELTA(grant_queue_overflows) fault:YES];
     [self setRow:ROW_HOST_DROPS
            value:snapshot.host_dropped_samples -
                  _baseline.host_dropped_samples fault:YES];
     [self setRow:ROW_ADC_FIFO value:DELTA(adc_fifo_overflow_count) fault:YES];
+    [self setRow:ROW_ADC_FIFO_HIGH_WATER
+           value:c->adc_fifo_level_high_water
+           fault:c->adc_fifo_level_high_water >= 16];
     [self setRow:ROW_ADC_DESCRIPTOR
            value:DELTA(adc_descriptor_error_count) fault:YES];
     [self setRangeRow:DELTA(adc_overrange_count)
@@ -365,6 +389,8 @@ static NSString *mode_name(uint32_t mode)
     [self setRow:ROW_DMA_DROPPED
            value:DELTA(dma_recovery_dropped_buffer_estimate) fault:YES];
     [self setRow:ROW_USB_DTD_ERRORS value:DELTA(usb_errors) fault:YES];
+    [self setRow:ROW_USB_SYSTEM_ERRORS
+           value:DELTA(usb_system_error_count) fault:YES];
     [self setRow:ROW_USB_QUEUE_RECOVERIES
            value:DELTA(usb_queue_recovery_count) fault:YES];
     [self setRow:ROW_USB_PARTIAL value:DELTA(usb_partial) fault:YES];
@@ -372,12 +398,20 @@ static NSString *mode_name(uint32_t mode)
            value:DELTA(usb_backpressure) fault:YES];
     [self setRow:ROW_BACKPRESSURE_LOSS
            value:DELTA(backpressure_discontinuity_count) fault:YES];
+    [self setRow:ROW_POISONED_EPOCHS
+           value:DELTA(stream_poison_count) fault:YES];
     [self setRow:ROW_STEERING_DISCARDS
            value:DELTA(steering_overwrites) fault:NO];
     [self setRow:ROW_STEERING_RUNS
            value:DELTA(steering_overwrite_runs) fault:NO];
+    [self setRow:ROW_STEERING_CURRENT_AVAILABLE
+           value:c->steering_current_available fault:NO];
     [self setRow:ROW_STEERING_MINIMUM_AVAILABLE
            value:c->steering_minimum_available fault:NO];
+    [self setRow:ROW_STEERING_FLOOR_FAST
+           value:DELTA(steering_floor_fast_path_boundaries) fault:NO];
+    [self setRow:ROW_STEERING_FULL_SCAN
+           value:DELTA(steering_full_scan_boundaries) fault:NO];
     [self setRow:ROW_STEERING_ALTERNATION
            value:DELTA(steering_alternation_violations) fault:YES];
     [self setRow:ROW_STEERING_NO_CANDIDATE

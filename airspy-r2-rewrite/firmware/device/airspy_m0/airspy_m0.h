@@ -22,6 +22,7 @@
 #ifndef __AIRSPY_M0_H__
 #define __AIRSPY_M0_H__
 
+#include <stdbool.h>
 #include "airspy_commands.h"
 
 void ADCHS_prepare(uint8_t conf_num);
@@ -31,5 +32,6 @@ void PLL1_park(uint8_t conf_num);
 
 void set_samplerate_m4(uint8_t conf_num);
 void set_packing_m4(uint8_t state);
+bool airspy_stream_requires_restart(void);
 
 #endif//__AIRSPY_M0_H__

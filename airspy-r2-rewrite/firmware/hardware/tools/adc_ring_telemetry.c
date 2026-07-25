@@ -12,10 +12,12 @@ enum {
   AIRSPY_PID = 0x60a1,
   STREAM_TELEMETRY_REQUEST = 0x87,
   STREAM_MAGIC = 0x53424f34u,
-  STREAM_VERSION = 6,
+  STREAM_VERSION = 9,
   STREAM_MODE_ADC_FOUR_BUFFER = 2,
   STREAM_MODE_RECOVERING = 3,
   BUFFER_COUNT = 10,
+  RETIRE_QUEUE_COUNT = 16,
+  GRANT_QUEUE_COUNT = 16,
   USB_TIMEOUT_MS = 5000
 };
 
@@ -65,6 +67,14 @@ typedef struct {
   uint32_t usb_controller_error_irq_count;
   uint32_t usb_bus_reset_count;
   uint32_t usb_port_change_count;
+  uint32_t retire_queue_write_sequence;
+  uint32_t retire_queue_read_sequence;
+  uint32_t retire_queue_overflows;
+  uint32_t retire_queue_entries[RETIRE_QUEUE_COUNT];
+  uint32_t grant_queue_write_sequence;
+  uint32_t grant_queue_read_sequence;
+  uint32_t grant_queue_overflows;
+  uint32_t grant_queue_entries[GRANT_QUEUE_COUNT];
   uint32_t recovery_request_generation;
   uint32_t recovery_acknowledged_generation;
   uint32_t recovery_completed_generation;
@@ -73,6 +83,12 @@ typedef struct {
   uint32_t dma_recovery_dropped_buffer_estimate;
   uint32_t last_dma_error_status;
   uint32_t backpressure_discontinuity_count;
+  uint32_t stream_poisoned;
+  uint32_t stream_poison_count;
+  uint32_t poison_transport_terminated;
+  uint32_t adc_fifo_level_high_water;
+  uint32_t adc_fifo_full_observations;
+  uint32_t usb_system_error_count;
   uint32_t gpdma[9];
   uint32_t clock_stream_pll1_ctrl;
   uint32_t clock_idle_pll1_ctrl;
@@ -104,7 +120,11 @@ typedef struct {
   uint32_t steering_group_skips;
   uint32_t steering_minimum_available;
   uint32_t steering_minimum_groups;
+  uint32_t steering_current_available;
+  uint32_t steering_current_groups;
   uint32_t steering_floor_boundaries;
+  uint32_t steering_floor_fast_path_boundaries;
+  uint32_t steering_full_scan_boundaries;
   uint32_t steering_isr_cycles_maximum;
   uint32_t maximum_capture_to_grant_age;
   uint32_t stale_generation_completions;
@@ -112,7 +132,7 @@ typedef struct {
   buffer_record_t buffers[BUFFER_COUNT];
 } stream_contract_t;
 
-_Static_assert(sizeof(stream_contract_t) == 748,
+_Static_assert(sizeof(stream_contract_t) == 940,
   "host and firmware stream contracts must agree");
 
 static const char* stream_mode_name(const uint32_t mode)
@@ -123,6 +143,7 @@ static const char* stream_mode_name(const uint32_t mode)
     case 1: return "synthetic";
     case STREAM_MODE_ADC_FOUR_BUFFER: return "ADC ring";
     case STREAM_MODE_RECOVERING: return "recovering";
+    case 4: return "poisoned";
     default: return "unknown";
   }
 }
@@ -399,6 +420,15 @@ int main(int argc, char** argv)
       ", partial-discontinuities=%" PRIu32
       ", controller-error-IRQs=%" PRIu32
       ", bus-resets=%" PRIu32 ", port-changes=%" PRIu32 "\n"
+    "retirement notifications: write/read=%" PRIu32 "/%" PRIu32
+      ", overflows=%" PRIu32 "\n"
+    "grant notifications: write/read=%" PRIu32 "/%" PRIu32
+      ", overflows=%" PRIu32 "\n"
+    "phase safety: poisoned=%" PRIu32 ", poison-count=%" PRIu32
+      ", transport-terminated=%" PRIu32
+      ", FIFO-level-high-water=%" PRIu32 "/16"
+      ", full-observations=%" PRIu32
+      ", USB-system-errors=%" PRIu32 "\n"
     "suspend: active=%" PRIu32 ", suspend/resume=%" PRIu32 "/%" PRIu32
       ", discontinuities=%" PRIu32 "\n"
     "recovery: request/ack/complete=%" PRIu32 "/%" PRIu32 "/%" PRIu32
@@ -416,8 +446,10 @@ int main(int argc, char** argv)
     "steering: decisions=%" PRIu32 ", deliberate-overwrites=%" PRIu32
       ", runs=%" PRIu32 ", longest-run=%" PRIu32
       ", alternation/no-candidate/stale=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+      ", current available/groups=%" PRIu32 "/%" PRIu32
       ", minimum available/groups=%" PRIu32 "/%" PRIu32
-      ", floor boundaries=%" PRIu32 ", worst cycles=%" PRIu32
+      ", floor/fast/full=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+      ", worst cycles=%" PRIu32
       ", maximum grant age=%" PRIu32 " banks\n",
     contract.version, stream_mode_name(contract.mode),
     contract.capture_generation, contract.capture_completed,
@@ -433,6 +465,18 @@ int main(int argc, char** argv)
     contract.usb_partial_discontinuity_count,
     contract.usb_controller_error_irq_count,
     contract.usb_bus_reset_count, contract.usb_port_change_count,
+    contract.retire_queue_write_sequence,
+    contract.retire_queue_read_sequence,
+    contract.retire_queue_overflows,
+    contract.grant_queue_write_sequence,
+    contract.grant_queue_read_sequence,
+    contract.grant_queue_overflows,
+    contract.stream_poisoned,
+    contract.stream_poison_count,
+    contract.poison_transport_terminated,
+    contract.adc_fifo_level_high_water,
+    contract.adc_fifo_full_observations,
+    contract.usb_system_error_count,
     contract.usb_suspended, contract.usb_suspend_count,
     contract.usb_resume_count, contract.usb_suspend_discontinuities,
     contract.recovery_request_generation,
@@ -464,9 +508,13 @@ int main(int argc, char** argv)
     contract.steering_alternation_violations,
     contract.steering_no_candidate_faults,
     contract.stale_generation_completions,
+    contract.steering_current_available,
+    contract.steering_current_groups,
     contract.steering_minimum_available,
     contract.steering_minimum_groups,
     contract.steering_floor_boundaries,
+    contract.steering_floor_fast_path_boundaries,
+    contract.steering_full_scan_boundaries,
     contract.steering_isr_cycles_maximum,
     contract.maximum_capture_to_grant_age);
 

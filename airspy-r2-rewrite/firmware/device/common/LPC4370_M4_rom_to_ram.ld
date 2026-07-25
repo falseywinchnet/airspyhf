@@ -27,15 +27,16 @@ MEMORY
 	/* rom is really the shadow region that points to SPI flash or elsewhere */
 	rom (rx)  : ORIGIN = 0x00000000, LENGTH =  1M
 	ram_local1 (rwx) : ORIGIN = 0x10000000, LENGTH =  128K
-	ram_local2 (rwx) : ORIGIN = 0x10080000, LENGTH =  72K
+	/* M4 data/stack moved into the S1 bank window vacated by capture bank 9. */
+	ram_local2 (rwx) : ORIGIN = 0x10018000, LENGTH =  8K
 	/* LPC437x only: Reserved for M0 subsystem SRAM 16KB + 2KB  */
 	ram_local_m0sub (rwx) : ORIGIN = 0x18000000, LENGTH =  18K
 
 	ram_ahb1_m0_stack (rwx) : ORIGIN = 0x20000000, LENGTH =  4K
 	ram_ahb1_spare    (rwx) : ORIGIN = 0x20001000, LENGTH =  3K
-	ram_ahb1_m4_share (rwx) : ORIGIN = 0x20001C00, LENGTH =  1K
+	ram_local_m4_share (rwx) : ORIGIN = 0x1001A000, LENGTH =  2K
+	ram_local_m0_share (rwx) : ORIGIN = 0x1001A800, LENGTH =  2K
 	ram_ahb1_adchs (rwx)    : ORIGIN = 0x20002000, LENGTH =  4K
-	ram_ahb1_m0_share (rwx) : ORIGIN = 0x20003000, LENGTH =  2K
 	ram_usb_queue_heads (rw) : ORIGIN = 0x20003800, LENGTH =  2K
 
 	/* Removed 32K of AHB SRAM for USB buffer. Straddles two blocks of RAM
@@ -48,9 +49,9 @@ MEMORY
 	ram_ahb2   (rwx) : ORIGIN = 0x2000C000, LENGTH =  16K
 }
 
-cm4_data_share = ORIGIN(ram_ahb1_m4_share);	/* M4 data shared (write by M4 read by M0 */
+cm4_data_share = ORIGIN(ram_local_m4_share);	/* M4 data shared (write by M4 read by M0 */
 adchs_data     = ORIGIN(ram_ahb1_adchs);	/* M4 ADCHS data (write by ADCHS DMA or M4) */
-cm0_data_share = ORIGIN(ram_ahb1_m0_share);	/* M0 data shared (write by M0 read by M4) */
+cm0_data_share = ORIGIN(ram_local_m0_share);	/* M0 data shared (write by M0 read by M4) */
 
 cm0_exec_baseaddr = ORIGIN(ram_ahb2);	/* Used by M4 to load code from M4 RAM to M0 final exec/run addr */
 cm0s_exec_baseaddr = ORIGIN(ram_local_m0sub);	/* Used by M4 to load code from M4 RAM to M0Sub final exec/run addr */
@@ -66,4 +67,4 @@ INCLUDE lpc43xx_rom_to_ram.ld
  * Keep the executable and static data away from those fixed windows.
  */
 ASSERT(_etext_ram <= 0x10008000, "M4 text overlaps local SRAM1 capture buffer")
-ASSERT(_ebss <= 0x10084000, "M4 data overlaps local SRAM2 USB test buffer")
+ASSERT(_ebss <= 0x1001A000, "M4 data exceeds its vacated S1 bank window")

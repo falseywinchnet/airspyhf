@@ -93,8 +93,10 @@ typedef struct {
 
 #define AOB_MONITOR_MAGIC 0x414f4235u /* AOB5 */
 #define AOB_MONITOR_VERSION 1u
-#define AOB_STREAM_CONTRACT_VERSION 6u
+#define AOB_STREAM_CONTRACT_VERSION 9u
 #define AOB_STREAM_BUFFER_COUNT 10u
+#define AOB_STREAM_RETIRE_QUEUE_COUNT 16u
+#define AOB_STREAM_GRANT_QUEUE_COUNT 16u
 
 typedef struct {
     uint32_t address;
@@ -142,6 +144,14 @@ typedef struct {
     uint32_t usb_controller_error_irq_count;
     uint32_t usb_bus_reset_count;
     uint32_t usb_port_change_count;
+    uint32_t retire_queue_write_sequence;
+    uint32_t retire_queue_read_sequence;
+    uint32_t retire_queue_overflows;
+    uint32_t retire_queue_entries[AOB_STREAM_RETIRE_QUEUE_COUNT];
+    uint32_t grant_queue_write_sequence;
+    uint32_t grant_queue_read_sequence;
+    uint32_t grant_queue_overflows;
+    uint32_t grant_queue_entries[AOB_STREAM_GRANT_QUEUE_COUNT];
     uint32_t recovery_request_generation;
     uint32_t recovery_acknowledged_generation;
     uint32_t recovery_completed_generation;
@@ -150,6 +160,12 @@ typedef struct {
     uint32_t dma_recovery_dropped_buffer_estimate;
     uint32_t last_dma_error_status;
     uint32_t backpressure_discontinuity_count;
+    uint32_t stream_poisoned;
+    uint32_t stream_poison_count;
+    uint32_t poison_transport_terminated;
+    uint32_t adc_fifo_level_high_water;
+    uint32_t adc_fifo_full_observations;
+    uint32_t usb_system_error_count;
     uint32_t gpdma[9];
     uint32_t clock_stream_pll1_ctrl;
     uint32_t clock_idle_pll1_ctrl;
@@ -181,7 +197,11 @@ typedef struct {
     uint32_t steering_group_skips;
     uint32_t steering_minimum_available;
     uint32_t steering_minimum_groups;
+    uint32_t steering_current_available;
+    uint32_t steering_current_groups;
     uint32_t steering_floor_boundaries;
+    uint32_t steering_floor_fast_path_boundaries;
+    uint32_t steering_full_scan_boundaries;
     uint32_t steering_isr_cycles_maximum;
     uint32_t maximum_capture_to_grant_age;
     uint32_t stale_generation_completions;
@@ -204,9 +224,9 @@ typedef struct {
 #pragma pack(pop)
 
 #if !defined(_MSC_VER)
-_Static_assert(sizeof(aob_stream_telemetry) == 748,
+_Static_assert(sizeof(aob_stream_telemetry) == 940,
                "bridge and firmware stream contracts must agree");
-_Static_assert(sizeof(aob_monitor_snapshot) == 792,
+_Static_assert(sizeof(aob_monitor_snapshot) == 984,
                "monitor wire layout changed unexpectedly");
 #endif
 

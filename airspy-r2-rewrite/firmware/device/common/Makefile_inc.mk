@@ -48,6 +48,9 @@ CFLAGS += -std=gnu99 -O2 -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
 		-fno-common -mcpu=cortex-m4 -mthumb -DTHUMB -MD -flto -ffunction-sections -fdata-sections \
 		-mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 		$(AIRSPY_OPTS) $(EXTRA_CFLAGS)
+ifeq ($(RELEASE),1)
+CFLAGS := $(filter-out -g%,$(CFLAGS))
+endif
 LDFLAGS += -mcpu=cortex-m4 -mthumb -DTHUMB -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 		-L$(TOOLCHAIN_DIR)/lib/armv7e-m/fpu -L../common \
 		-L$(LIBOPENCM3)/lib -L$(LIBOPENCM3)/lib/lpc43xx \

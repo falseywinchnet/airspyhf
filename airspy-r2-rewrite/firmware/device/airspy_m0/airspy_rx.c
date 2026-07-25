@@ -44,7 +44,8 @@ void set_receiver_mode(const receiver_mode_t new_receiver_mode)
    * active USB queue merely because a host repeats RECEIVER_MODE_RX.
    */
   if (new_receiver_mode == old_receiver_mode
-    && new_receiver_mode != RECEIVER_MODE_OFF)
+    && new_receiver_mode != RECEIVER_MODE_OFF
+    && !airspy_stream_requires_restart())
   {
     return;
   }

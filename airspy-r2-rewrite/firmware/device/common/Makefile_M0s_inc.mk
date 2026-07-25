@@ -42,6 +42,9 @@ TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
 CFLAGS += -std=gnu99 -Os -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
 		 -mthumb -DTHUMB -mcpu=cortex-m0 -flto -ffunction-sections -fdata-sections \
         $(AIRSPY_OPTS)
+ifeq ($(RELEASE),1)
+CFLAGS := $(filter-out -g%,$(CFLAGS))
+endif
 
 LDFLAGS += -mcpu=cortex-m0 -mthumb -DTHUMB \
         --specs=nano.specs \

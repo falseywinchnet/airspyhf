@@ -301,8 +301,6 @@ void ADCHS_deinit(void)
 /* Initialized ADCHS for freq between 0 to less than 30MSPS */
 void ADCHS_init(void)
 {
-  uint32_t i;
-
   ADCHS_init_stop();
 
   LPC_ADCHS->CONFIG =
@@ -323,11 +321,13 @@ void ADCHS_init(void)
   LPC_ADCHS->ADC_SPEED = 0x0;
 
   LPC_ADCHS->FLUSH = 1;
-
-  for(i = 0; i < 5; i++ )
-  {
-    while( LPC_ADCHS->FIFO_STS ); /* Wait until FIFO empty. */
-  }
+  /*
+   * UM10503 requires at least one CPU cycle before observing fill level.
+   * FIFO_STS level zero is ambiguous (empty or 16 words), so wait on the
+   * explicit STATUS0 FIFO_EMPTY indication instead.
+   */
+  __asm volatile ("nop");
+  while ((LPC_ADCHS->STATUS0 & STAT0_FIFO_EMPTY) == 0);
 
   /* Configure Threshold A & B to default value (even if not used) */
   LPC_ADCHS->THR_A = 0x00FFF000;
@@ -338,6 +338,7 @@ void ADCHS_init(void)
   LPC_ADCHS->CLR_STAT0 = STATUS0_CLEAR_MASK;
   LPC_ADCHS->CLR_EN1   = STATUS1_CLEAR_MASK;
   LPC_ADCHS->CLR_STAT1 = STATUS1_CLEAR_MASK;
+  LPC_ADCHS->SET_EN0   = STAT0_FIFO_OVERFLOW;
 
 }
 

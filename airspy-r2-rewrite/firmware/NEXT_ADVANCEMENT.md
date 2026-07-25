@@ -1,363 +1,342 @@
 # Firmware next advancement
 
-Status: implemented as experimental V6; hardware qualification in progress  
-Baseline: V5c universal R2/Mini, alternating-SRAM ten-bank ring  
+Status: V7 release build flashed and byte-verified on R2 and Mini
+Baseline: ten-bank steered ring, M4-only grants, M0 retirement ring
 Wire compatibility: unchanged legacy Airspy One API and headerless sample stream
 
-## Why this is next
+## Implementation result
 
-V5c makes buffer and dTD ownership explicit and gives short USB congestion
-several milliseconds of runway. Its remaining congestion policy is wrong for a
-continuous receiver: when USB owns the bank that DMA would reuse, firmware
-halts capture. That converts a host transport delay into ADC/FIFO disruption
-and can require GPDMA recovery. It also retains old samples for the duration of
-an arbitrarily long host stall.
+All approved items landed in V7:
 
-Vanilla avoids a deep stale queue by continuously rotating its two capture
-banks, but it does so without explicit USB ownership and can silently skip or
-tear history. The next design keeps V5c's ownership rigor while recovering the
-useful vanilla property: severe congestion loses continuity but remains close
-to current RF time.
+- bank placement is 4/4/1/1 across S1/S2/S3/S4 with circular slave
+  alternation; M4 data and both shared mailboxes occupy the vacated S1 window,
+  while the 1.25 KiB dTD pool occupies the qualified 8 KiB tail of S2;
+- M4 drains at most two retirements and grants at most two banks per boundary;
+  available-bank and available-group counts are maintained incrementally;
+- M4 publishes grants through a 16-entry SPSC ring, eliminating M0's nested
+  oldest-grant record search;
+- optional diagnostic aggregation is compiled out of the boundary; control,
+  ownership, loss, current-depth, maximum-interval, and FIFO-margin fields stay;
+- FIFO flush uses `STATUS0.FIFO_EMPTY` after the required delay, FIFO occupancy
+  has an ambiguity-safe high-water mark, and overflow immediately poisons and
+  terminates the transport epoch rather than publishing uncertain-phase data;
+- USB System Error interrupt handling and PLL1 AUTOBLOCK follow the later
+  manual revisions.
 
-The policy is:
+The stream contract is version 9. The sample stream and public API are
+unchanged.
 
-> Absorb congestion losslessly while free banks remain. Never halt ADC because
-> USB is late; overwrite the oldest retained history instead, and keep the
-> retained window the freshest consecutive run.
+## Objective
 
-The halt also has a second cost that is easy to miss. Under a sustained rate
-shortage the protection test does not fire once; it fires at every bank
-boundary, throttling DMA to the drain rate through thousands of very short
-halts. The RF time lost is the same either way, but it arrives as thousands of
-scattered micro-discontinuities rather than one consecutive gap. Scattered loss
-is the worst shape for any downstream decoder. A single consecutive run is the
-best available, and it is what this design produces.
+> The only loss is a whole bank, discarded deliberately. Loss anywhere else is a
+> defect.
 
-## Fixed timing facts
+The ring reached that for USB congestion. It has not reached it for the HSADC
+FIFO. Everything below is about closing that gap by minimising GPDMA delay.
 
-At nominal 10 MS/s complex output, the ADC produces 20 million real samples/s
-in 16-bit containers:
+## Why the remaining work is GPDMA delay, not buffering
 
-```text
-40 MB/s unpacked
-16 KiB bank = 409.6 microseconds
-8 KiB LLI packet = 204.8 microseconds
-ten banks = 4.096 milliseconds nominal
-usable backlog depth = eight banks = 3.2768 milliseconds
-```
+A bank is 16384 bytes, 8192 real samples. The host recovers I/Q by mixing at
+Fs/4, a sequence of period four, and 8192 is divisible by four. **A discarded
+bank is phase-safe.** It costs RF time and nothing else.
 
-Usable depth is eight, not ten, because one bank is being filled and one must be
-free for the steering decision. That `n - 2` figure is the device's real
-robustness number and matches the observed 649,470-cycle service gap, which is
-about 7.9 bank intervals against a measured 81,883 to 82,798 cycles per bank.
+An HSADC FIFO overflow is not. The ADC fails to enqueue an unknown number of
+conversions before DMA sees them. DMA still completes the programmed byte count
+at the right boundary, so transport alignment survives while acquisition phase
+does not. Three times in four the residue is nonzero; half of those swap I and Q
+and mirror the spectrum. The count cannot be recovered afterwards: adding a known
+even quantity does not change an unknown parity, flushing discards a residue of
+unknown occupancy, and completion timing resolves to tens of samples where
+single-sample accuracy is needed.
 
-This device-side latency is small relative to the established host transfer and
-application queues. It is useful USB-scheduling runway, not permission for
-unbounded stale data.
+So the FIFO is the one place the objective can still be violated, and it is
+defended by a very small amount of time.
 
-## Chosen architecture
-
-V5c already computes the ownership of the bank two ahead at every bank boundary
-and uses it to decide whether to stop. The same computation, at the same
-instant, decides instead where to go next.
-
-The ten qualified banks stay in one pool. There is no static partition, no
-separate private ring, and therefore no mode to enter or leave.
+The size of that defence is now measured, from UM10503 Rev 2.4 chapter 48
+(ADCHS, added Rev 1.7, corrected Rev 1.8):
 
 ```text
-ten banks, one pool
-M4-only USB grants and a two-bank DMA steering window
-steering decision taken at every completed-bank boundary
+FIFO depth                     16 words          (Table 1124: "up to 16 words")
+PACKED_READ = 1 in FIFO_CFG    2 samples/word    => 32 samples = 1.60 us
+FIFO_LEVEL = 8 raises DMA_Read_Req at 8 words    => 16 samples = 0.80 us
+headroom from DMA request to overflow            => 16 samples = 0.80 us
 ```
 
-A bank is FREE, READY, GRANTED, or SUBMITTED. The DMA ISR is the sole execution
-context that writes the grant field; M0 may attach a dTD only after observing
-that grant. This closes both the cross-core claim race and the subtler
-same-core race in which the DMA ISR could interrupt a main-loop grant scan,
-reserve its selected bank, and then return to a stale grant commit.
+**The budget for a GPDMA service delay is 0.8 microseconds.** Boundary work is
+judged against that, not against the 409.6 us bank period. The quantity that
+matters is the longest single stall a change can impose on a slave port GPDMA
+needs, not its total cycle count.
 
-The implementation examines the fixed ten-entry table rather than maintaining
-mutable cross-core free lists. This is bounded work, keeps ownership legible,
-and avoids another shared list whose retirement updates would themselves need
-synchronization. The generated image records the worst steering cycles so this
-choice is qualified against the 8 KiB packet margin on hardware.
+## The metric to steer by
 
-The ten banks presently occupy four distinct AHB slave ports, not two:
+Overflow count is post-mortem. Add and watch instead:
+
+- maximum observed `FIFO_STS.LEVEL` against the 16-word depth;
+- longest DMA completion interval expressed as sample overrun against nominal.
+
+Both are margin. Every change below is accepted or rejected on whether it moves
+them.
+
+`FIFO_STS.LEVEL` is bits 3:0 and **0 means empty or exactly 16 words**, not
+empty. Disambiguate with `STATUS0.FIFO_EMPTY`: 1 is truly empty, 0 with LEVEL 0
+means full. A high-water mark that misses this reads its most dangerous sample
+as its safest.
+
+## Work
+
+### 1. Placement, attempted first because it is free at run time
+
+Non-bank traffic is not distributed like the banks:
 
 ```text
-S1  0x1000 0000  128 kB local SRAM   banks 1,3,5,7,9   5 banks
-S2  0x1008 0000   72 kB local SRAM   banks 2,6,8       3 banks
-S3  0x2000 0000   32 kB AHB SRAM     bank  0           1 bank
-S4  0x2000 8000   16 kB AHB SRAM     bank  4           1 bank
+S1  0x1000 0000  banks 1,3,5,7,9  + ram_usb_dma_metadata @0x1001C000 (dTDs)
+S2  0x1008 0000  banks 2,6,8
+S3  0x2000 0000  bank 0 + m4_share + m0_share + usb_queue_heads + M0 stack
+S4  0x2000 8000  bank 4
 ```
 
-The familiar "five local-SRAM1 and five other-slave" description is correct in
-aggregate, but the five others are spread across three separate slaves. This
-matters for steering: the constraint is that consecutive destinations differ in
-slave *port*, so S2 to S3 is legal even though neither is S1. Steering therefore
-has more freedom than a two-way alternation would allow, and the group sizes are
-uneven (5/3/1/1) rather than balanced.
+The two ports carrying every shared structure also carry six of the ten banks.
+S1 holds five capture banks and the dTD descriptors USB0 fetches continuously.
+S3 holds the dQH, both shared-contract regions that M4 and M0 poll, M0's stack,
+and a bank. Every contract access from the boundary path is an AHB transaction
+on the same port as bank 0 and the queue heads.
 
-The alternating-slave rule is preserved and promoted to a named invariant.
-V5/V5b demonstrated one deterministic ADC FIFO event per ten-bank revolution
-when two consecutive DMA destinations used local SRAM1. V5c removed it by
-alternating local-SRAM1 banks with destinations on other SRAM slaves. UM10503
-3.6 explains it: masters sharing one AHB slave port arbitrate round-robin, and
-GPDMA bursts up to eight beats against a CPU burst of one. It is arbitration,
-not errata; ES_LPC43x0 Rev 7.2 contains no GPDMA erratum. The required property
-is alternation, not the number five, and the group sizes need not be equal.
+Attempt, in order of expected value:
 
-## Steering
+1. Move one bank from S1 to S2, giving 4/4/1/1. S2 is 72 KiB holding 48 KiB.
+2. Move `ram_usb_dma_metadata` off S1 if any qualified region can take it.
+3. Move the polled shared-contract regions off S3, or move bank 0 off S3.
 
-At each completed-bank boundary, rewrite the destination of the bank two ahead:
+This may not be achievable. The constraints are real: `0x2000C000` is shared with
+the ETB, `0x18000000` is unqualified for USB0 reach, and M0 subsystem SRAM at
+`0x10400000` is reached through a bridge and is a poor streaming target. Partial
+success is acceptable and should be reported as which of the three landed.
+
+`firmware.steering_model` re-proves alternation and the reserve rule against the
+new address table automatically, so a placement change costs no new test work.
+
+### 2. Boundary path
+
+Four operations are irreducible. They cost roughly six to ten bus transactions
+and cannot be moved anywhere:
 
 ```text
-target = bank two ahead of the one just completed
-prev   = slave group already committed for the bank between them
-pick   = choose the oldest reusable bank from any group != prev
-write  = destination words of target's two LLI descriptors
+acknowledge hardware
+publish the completed bank
+choose one destination and write two descriptor words
+signal M0
 ```
 
-`prev` is known because it was chosen one boundary earlier, so alternation is
-enforced against the committed sequence rather than a prediction.
+Everything else in `dma_isr` is discretionary. The current body makes **51
+volatile contract accesses, of which about 37 are diagnostic aggregation** —
+counters, maxima, histograms, cycle timing. A few of those carry control meaning
+and stay; the bulk does not. The realistic target is **51 down to about 10**, a
+five-fold cut in boundary bus traffic.
 
-Retired FREE banks are preferred. At the congestion floor, the oldest
-ungranted READY bank is deliberately reused. That is what makes the retained
-window the freshest contiguous run: when history must be lost, the loss is one
-consecutive interval rather than many scattered ones.
+V6c already took the largest single step by replacing ownership-record scans
+with masks: the ISR body now touches `buffers[]` three times, against ten records
+times several volatile fields per boundary in V5c. That is banked. What remains:
 
-Two facts from UM10503 make this safe and bound its cost. Channel SRCADDR,
-DESTADDR, CLLI and CONTROL are updated "by following the linked list when a
-complete packet of data has been transferred" (19.6.16, 19.6.19): the
-controller holds only the current LLI and fetches the next at packet
-completion, without prefetching during a packet. A descriptor two or more hops
-ahead is therefore not under the controller's eye. Margin is one full packet:
+- **remove diagnostic aggregation** from the boundary, behind a compile flag once
+  qualified. Largest block, pure deletion, no semantics change;
+- **bound the retirement drain**, currently `while (read != write)` up to sixteen.
+  Masks lagging one boundary only understates available banks, which is safe;
+- **maintain depth and group counts incrementally** instead of calling
+  `adc_ring_bit_count` and `adc_ring_group_count` every boundary;
+- **cap grants at two per boundary**, two being the minimum that lets a backlog
+  contract by one bank per boundary.
 
-```text
-8 KiB packet at 10 MSPS = 204.8 microseconds
-8 KiB packet at  6 MSPS = 341.3 microseconds
+**Grants can be bounded but not relocated.** They live in the ISR deliberately,
+to close the M4-main-versus-M4-ISR race that stranded a bank by committing a
+grant after the ISR had already steered DMA into it. Moving them to the idle path
+reintroduces that race unless interrupts are masked around the commit, which puts
+an interrupt-disable window exactly at the bank boundary. Against a 0.8 us budget
+that trade is not worth making.
+
+Ranked by value per unit of risk: diagnostic removal, then placement, then
+bounding, then grant capping. Grant capping is last because it touches the
+mechanism most recently fixed.
+
+Two distinct levers act on the same 0.8 us. Reducing boundary work attacks the
+transaction *count*. Placement attacks whether each transaction *stalls*. One
+transaction queued behind an eight-beat GPDMA burst on a contended slave costs
+more than ten that are not, so the two are worth pursuing independently.
+
+### 3. M0 submit path, which has not had the V6c treatment
+
+`adc_stream_submit_ready` still selects the oldest granted bank by scanning every
+record: an outer loop over ten banks wrapping an inner ten-bank scan that reads
+`granted_generation`, `produced_generation` and `submitted_generation` from each
+record. Up to a hundred iterations and three hundred volatile reads per call,
+around sixty in the common single-submit case, on every `sev` — which M4 raises
+at least once per bank boundary.
+
+Those reads land on the same slave port as bank 0 and the USB queue heads. This
+is the exact pattern V6c removed from M4 and never applied to M0, and by volume
+it is now larger than anything left in the ISR: three record touches on M4
+against up to three hundred reads on M0.
+
+The fix is symmetric with a mechanism already proven here. V6c added an M0-to-M4
+retirement notification ring; add the mirror, an M4-to-M0 grant ring. M4 already
+owns the grant decision and the generation ordering, so it can publish the bank
+index directly and M0 pops an index instead of rediscovering it. The
+`granted_generation` field remains the ownership authority; the ring only removes
+the search.
+
+### 4. Already tight, checked
+
+Recorded so these are not re-examined: no stray divisions or modulo on the
+streaming paths, `adc_ring_next_index` is compare-and-wrap and the only `%` is by
+sixteen, which the compiler reduces to a mask; `allocate_transfer`,
+`free_transfer` and `usb_queue_transfer_complete` are O(1) list operations; the
+`do/while (aborted)` loops in `usb_queue.c` are the hardware-mandated ATDTW
+retry procedure and cannot be removed.
+
+### 5. FIFO: instrument precisely, then fail hard
+
+`adchs.c` disables every HSADC interrupt (`CLR_EN0 = STATUS0_CLEAR_MASK`, no
+`SET_EN0` anywhere) and polls the sticky `STAT0_FIFO_OVERFLOW` once per boundary.
+That gives the weakest signal available:
+
+- the counter reports **bank periods containing at least one overflow**, not lost
+  samples, so the true loss is unbounded and not derivable from it;
+- detection lags up to a bank period, so the contaminated bank has already
+  completed before the flag is seen.
+
+Enable `SET_EN0 = STAT0_FIFO_OVERFLOW` for immediate detection, and sample
+`FIFO_STS` for the occupancy high-water mark.
+
+Two header corrections while there. `STAT0_FIFO_FULL (0x1<<0)` is a misnomer:
+bit 0 is `FIFO_LEVEL_TRIG`. `FIFO_FULL (0x1<<4)` refers to a bit that Rev 1.8
+made Reserved when it narrowed `LEVEL` to four bits; it is a Rev 1.7 artifact.
+Neither is used, but both mislead.
+
+**Fix the flush before relying on the epoch restart.** `adchs.c:325` does:
+
+```c
+LPC_ADCHS->FLUSH = 1;
+for (i = 0; i < 5; i++) { while (LPC_ADCHS->FIFO_STS); }
 ```
 
-against a decision costing one list pop and two stores.
+`FIFO_STS == 0` is empty *or* 16 words, so this can exit on a completely full
+FIFO. The manual also requires at least one CPU cycle between a flush and a fill
+level read, so the first read can return stale zero and the whole construct
+becomes a no-op. Either fault leaves residue in the FIFO at epoch start, which
+begins the new epoch on the wrong phase and defeats the reason for terminating
+the old one. Insert the cycle, then loop on `STATUS0.FIFO_EMPTY`.
 
-`TRANSFERSIZE` is twelve bits, maximum 4095 transfers, four bytes short of a
-16 KiB bank at 32-bit width (Table 290). Two descriptors per bank is the
-minimum legal encoding, not a choice, and steering therefore rewrites two
-destination words per bank.
+Then, on the first overflow, one shot:
 
-The prohibition in 19.6.18 — "Programming this register when the DMA channel is
-enabled may have unpredictable side effects" — applies to the channel register
-at `0x4000 2108`, not to the descriptor array in memory. Nothing may write
-`C0LLI` while the channel is enabled. This distinction carries the whole safety
-argument and belongs in a comment at the write site.
+1. halt channel 0 and stop the ADC trigger;
+2. publish no bank captured at or after the fault;
+3. mark the stream poisoned and signal M0;
+4. M0 terminates the bulk-IN epoch so the driver's existing corrupt-transfer path
+   fires;
+5. leave the receiver stopped until a fresh `RECEIVER_MODE_RX` rebuilds ADC, DMA,
+   FIFO, generations and bank state as a new epoch.
 
-## The rule that removes the halt
+Nothing is recovered in place. The interval that produced the overflow is not one
+in which recovery logic can be assumed to run promptly.
 
-> Never grant a bank to USB if that would leave fewer than one non-USB-owned
-> bank in each of at least two distinct slave groups.
+The poison state is control flow, not telemetry, and must not be conditional on
+diagnostics being compiled in.
 
-Two groups, because alternation needs a legal alternative at every boundary;
-one bank each, because that is the floor at which the steering pop can still
-always succeed.
+**Driver coupling to record on the other side:** termination works because
+`airspy.c:489` treats any short or non-`COMPLETED` bulk transfer as fatal. A short
+bulk-IN transfer is a device-initiated epoch termination and must remain fatal.
+The deliberate short or zero-length terminal transfer carries no data and signals
+termination only, which is why it does not violate the rule against new framing.
 
-This single rule makes "no free bank to steer into" unrepresentable. The GPDMA
-never halts and the ADC never stops for host congestion — not by policy, but
-arithmetically. Usable transport depth is eight of ten banks, the same as the
-partitioned design, except the reserve floats instead of being fixed to two
-addresses.
+### 6. Two corrections the manual acquired after this code was written
 
-## Normal operation
+Both are small, both are documented requirements the original sources predate.
 
-1. GPDMA captures continuously; every boundary steers the bank two ahead.
-2. M4 grants completed banks oldest-first subject to the reserve rule; M0
-   attaches them to the linked bulk-IN dTD queue in generation order.
-3. Short host congestion accumulates valid, ordered banks and the free set
-   shrinks.
-4. USB retirement releases the exact generation of each bank and returns it to
-   its group's free list.
-5. Sustained congestion shrinks the free set continuously to its floor of two.
-   There is no cliff between eight and two, and no transition.
+**USB system error is unhandled.** Rev 1.9 (February 2015) changed bit 4 of
+`USBSTS_D` from Reserved to `SEI`, bit 4 of `USBINTR_D` to `SEE`, and added
+section 25.11. The USB controller is an AHB bus master; on a bus error it sets
+System Error, sets HChalted, and **clears Run/Stop by itself**, after which
+software must reset the controller via HCReset before re-initialising. The
+manual names the likely device-mode cause as corrupted `dTD`/`dQH` pointer
+fields.
 
-Normal operation must not add packing, copying, framing, or a new public
-request. The raw byte stream remains compatible with existing libairspy.
+`usb_bus_event` checks `UEI`, `URI` and `PCI` only. A system error therefore
+presents as the endpoint silently ceasing, with no counter and no recovery,
+which is precisely the shape of failure that is hard to attribute under bus
+stress. Enable `SEE`, count `SEI`, and treat it as a hard fault: it is a
+controller halt, not congestion.
 
-## Degradation and recovery
+**`PLL1_CTRL` AUTOBLOCK is never set.** Rev 2.3 (2017) added note [1] to
+Table 137: "When the PLL1 is enabled, set the AUTOBLOCK bit in the PLL1_CTRL
+register to 1. This bit re-synchronizes the clock output during frequency
+changes that prevents glitches when switching clock frequencies."
 
-Once the free set reaches its floor, completing a bank overwrites the oldest
-retained history. Capture-generation and discarded-bank counters continue
-advancing. Tuner, clocks, ADC configuration, and requested sample rate remain
-unchanged. USB recovery may fail, retry, or escalate without stopping capture.
+`cpu_clock_pll1_high_speed` and `cpu_clock_pll1_low_speed` reconfigure PLL1
+while enabled, once at every stream start and once at every stop. AUTOBLOCK is
+set on the `BASE_*_CLK` registers but not on `PLL1_CTRL`. The two-stage ramp
+with the 50 us dwell is already correct and cites Rev 1.8 Figure 30; only this
+step, added three years later, is missing. It is a one-line change.
 
-Recovery needs no detection logic. As dTDs retire, banks return to the free
-lists, the reserve rule relaxes on its own, and depth grows back. The host's
-return is observed implicitly by dTDs completing; there is nothing to detect,
-no epoch to start, and no chain to switch back.
-
-At most eight banks can be queued, so the stale queue a returning host must
-drain is bounded at 3.3 milliseconds at 10 MSPS. That does not justify a flush
-path.
-
-This is controlled loss of history, not USB-owned memory corruption. A bank may
-not acquire a dTD while it is inside the steering window.
-
-## USB controller policy
-
-There is one controller state:
-
-```text
-always:
-    linked ACTIVE bulk-IN queue
-```
-
-The reserve rule means the device is never obliged to stop appending in order to
-protect capture, so the severe-congestion and return states disappear along with
-the mode machine. Append when the reserve rule permits; otherwise wait. Nothing
-else changes.
-
-Do not reset, flush, prime, clear halt, or reset DATA0/DATA1 while trying to
-recover ordinary congestion. Application pause/resume preserves the shared data
-toggle. USB bus reset and endpoint-halt recovery remain distinct USB protocol
-boundaries.
-
-Failure to retire a dTD pins the affected bank. Pinned banks reduce the free set
-and are thereby already accounted for by the reserve rule; they must not stop the
-ADC.
-
-Host return needs no detection. Retiring dTDs return banks to the free lists, the
-reserve rule relaxes by itself, and submission resumes. The endpoint-NAK
-experiment and the probe-transfer fallback are dropped. No ZLP, marker, header,
-or new stream framing is introduced.
-
-## Ownership and ordering invariants
+## Invariants
 
 - Consecutive GPDMA destinations never share an AHB slave port.
 - At least two slave groups always hold a non-USB-owned bank.
 - USB never references a bank inside the steering window.
 - DMA never enters a bank owned by a live or stale dTD.
-- A stale completion may release only its recorded old generation.
 - Descriptor writes target only in-memory LLIs two or more hops ahead; the
   channel LLI register is never written while the channel is enabled.
-- Ambiguous ownership remains a safe-stop/reset class fault; ordinary host
-  congestion does not.
-- A discontinuity is preferable to torn, reordered, or silently aliased data.
-- A discontinuity should be one consecutive run rather than several.
+- A stale completion releases only its recorded generation.
+- A discontinuity is one consecutive run, and is preferred to torn, reordered or
+  silently aliased data.
+- Ambiguous ownership is a safe-stop fault; ordinary congestion is not.
 
-The first two invariants need attention they did not need before. V5c satisfies
-alternation by static address ordering, which a link-time assertion proves.
-Steering satisfies it dynamically, so that assertion no longer proves anything.
+Alternation is proven dynamically now rather than by link-time address ordering,
+so it needs the model check and a must-be-zero firmware counter.
 
-The replacement proof is cheap. Steering consults only group-level information,
-so the per-group non-submitted counts are a sound abstraction of the concrete
-bank states. That abstract space is 238 reachable states rather than the tens of
-millions of concrete ones, which makes this an ordinary unit test rather than a
-model-checking exercise. `analysis/congestion/steering_proof.py` enumerates it.
+## Not doing
 
-The counting argument it confirms: steering needs a non-submitted bank in a group
-other than the one already committed for the next bank. If the non-submitted set
-spans at least two groups, the committed group can match at most one of them, so
-at least one other group has a bank available. The bank currently being filled
-sits in the committed group, which is the excluded one, so it can never be chosen
-by mistake.
+- No increase beyond ten banks. Twelve buys 819 us and costs ETB, unqualified
+  regions, or bridge-reached memory.
+- No new framing, sequence numbers, timestamps or epoch markers in the stream.
+- No recovery in place after an overflow.
+- No transfer-geometry or driver-policy changes.
+- No new test apparatus beyond the existing model test.
 
-Exhaustive enumeration shows the reserve rule is not merely sufficient but
-**necessary**: without it, ten stuck states are reachable. They are worth reading
-because they are counter-intuitive.
+## Observations behind these calls
 
-```text
-non-submitted [S1=5, S2=0, S3=0, S4=0], next bank committed to S1
-    -> no legal steering target
-```
-
-Five banks free, half the ring, and no legal move. The failure is not scarcity of
-free memory but loss of *slave diversity*. Any reserve rule phrased as "keep N
-banks free" fails to prevent this at any N. The rule has to be about how the free
-banks are distributed across slave ports, which is why it is phrased that way.
-
-The same enumeration independently reproduces the eight-of-ten depth figure: the
-deepest reachable submission under the rule is exactly eight banks.
-
-Firmware still carries a must-be-zero alternation counter, because the proof
-covers the design and not its implementation.
-
-## Telemetry additions
-
-Extend the existing private request `0x87`, versioning the structure if its
-layout changes. The transition and reentry counters are moot; there are no
-transitions. Add:
-
-- slave-alternation violations, which must be identically zero;
-- free-bank count distribution, being the floating reserve depth over time;
-- minimum observed free-bank count;
-- steering pops that had to skip a group to satisfy alternation;
-- banks deliberately overwritten because the free set was at its floor;
-- consecutive-run length distribution for discontinuities;
-- time spent at the reserve floor;
-- stale-epoch completions;
-- maximum capture-to-submit age;
-- ADC FIFO overflow, which under this design should be identically zero and
-  therefore remains a hard failure.
-
-Counters remain observational. They must not add blocking work to the capture
-path and must use unsigned wrap-safe deltas.
-
-## What this does not promise
-
-“Never halt for USB congestion” does not mean the ADC can continue through a
-real GPDMA channel fault, corrupted LLI, lost clock, impossible ownership
-state, explicit receiver stop, or MCU reset. Those faults may require bounded
-reconstruction or safe failure.
-
-The promise is narrower and testable:
-
-> A late or unavailable host, dTD exhaustion, and ordinary bulk-IN
-> backpressure do not halt ADC/GPDMA capture.
-
-## Deferred work
-
-- Lossless packing remains disabled by default until full-bank worst-case cycle
-  and SRAM-arbitration measurements pass.
-- Clang/`-Oz`, code relocation, and possible twelve-bank memory reclamation are
-  separate experiments. They are not required for this design.
-- New framing, sequence headers, compression, sample rates, and clock changes
-  are outside this advancement.
-- Additional SRAM at `0x18000000` remains unqualified.
-
-## Implementation order
-
-1. Express the single ten-bank pool, per-slave availability, and allowed
-   ownership states in the host model.
-2. Port `analysis/congestion/steering_proof.py` into the host model's test suite,
-   parameterised by the actual bank/slave table rather than a hardcoded one, so
-   that any future re-placement of banks re-proves the reserve rule or fails the
-   build.
-3. Add stale-generation tests covering every bank-boundary phase.
-4. Generate the twenty-descriptor chain with linker/address assertions, and
-   assert descriptor placement away from capture and USB slave ports.
-5. Implement future-LLI destination rewriting without channel disable, writing
-   only in-memory descriptors.
-6. Replace the halt test at the completed-bank boundary with the steering
-   decision.
-7. Implement the reserve rule as an M4-only grant before the M0 submission
-   site, removing the cross-core claim race.
-8. Add telemetry, including the must-be-zero alternation counter.
-9. Inspect generated assembly and measure worst-case steering cycles against the
-   one-packet margin.
-10. Build an experimental image only after the model and static contracts pass.
-
-## Exit criteria
-
-- No ADC channel halt caused by USB congestion in source or generated traces.
-- The word "halted" does not appear in the host-congestion path.
-- No consecutive pair of GPDMA destinations shares an AHB slave port, over the
-  whole model state space and with the firmware counter at zero on hardware.
-- At least two slave groups hold a free bank at all times.
-- No bank is overwritten while USB-owned, and no dTD references a bank inside
-  the steering window.
-- Steering worst-case cycles are well inside one packet time at 10 MSPS.
-- Congestion shorter than the available free depth remains lossless and ordered.
-- Longer congestion produces counted discontinuities, each a single consecutive
-  run, while capture generations continue monotonically.
-- Depth recovers without any host-return detection, epoch change, or flush.
-- A dTD that never retires pins its bank without stopping the ADC.
-- R2 and Mini pass repeated congestion/recovery and start/stop cycles.
-- Stock libairspy continues receiving the unchanged raw stream.
+- Two radios on one USB 2.0 bus demand 64 MB/s against a 53.2 MB/s ceiling. The
+  backpressure and whole-bank discards observed there are arithmetic and correct
+  behaviour, not a defect.
+- In that run, ownership-protection halts, no-candidate steering faults, SRAM
+  alternation violations and GPDMA errors were all zero while the FIFO
+  overflowed. The channel ran correctly and the ADC outran it, which leaves bus
+  arbitration as the cause.
+- V5/V5b placed two consecutive destinations in local SRAM1 and produced one
+  deterministic overflow per revolution; alternating removed it. UM10503 3.6
+  explains it as round-robin arbitration between masters on one slave port, with
+  GPDMA bursting up to eight beats against a CPU burst of one. It is arbitration,
+  not errata: ES_LPC43x0 Rev 7.2 contains no GPDMA erratum.
+- The commented `ram_ahb1_0` and `ram_ahb1_1` entries in the linker script show
+  vanilla split its two banks across `0x20004000` and `0x20008000` deliberately
+  for the same reason.
+- Vanilla has no backpressure. It relies on the host draining faster than DMA
+  wraps, and its minimal path is prevention through narrow timing margins rather
+  than robustness. Under the same two-radio load it would skip and tear silently,
+  with its overflow counter compiled out.
+- ADCHS reached the user manual only in Rev 1.7 (October 2013) and was corrected
+  in Rev 1.8 (January 2014), which narrowed the FIFO level fields to four bits
+  and added the explanation of the LEVEL semantics. Nothing ADCHS-related
+  changed after that through Rev 2.5. Firmware written against Rev 1.7 therefore
+  predates both corrections, and `adchs.h` still carries a Rev 1.7 artifact.
+- The full revision sweep from 1.7 to 2.5 (September 2019) was done. Only two
+  further changes touch this firmware, both above: USB system error in Rev 1.9
+  and the PLL1 AUTOBLOCK note in Rev 2.3. Recorded so the sweep is not repeated:
+  Rev 1.9's relabelling of `0x1008A000`-`0x10092000` in Figure 8 does **not**
+  split the 72 kB block, which the 2019 AHB matrix diagram still shows as one
+  matrix slave, so the S2 grouping stands; Rev 2.4's new section 51.8 is debug
+  memory re-mapping and an FPB attack surface, not applicable; Rev 2.5 changed
+  only ISP/IAP flash-erase warnings.
+- The waterfall looked usable across thousands of flagged overflow periods, which
+  is not consistent with thousands of phase inversions. Either the flag can
+  assert without loss, the losses were multiples of four, or the display did not
+  show it. Worth one off-centre-tone capture before the poison is enforced,
+  because fail-hard turns the two-radio case from degraded into stopped.

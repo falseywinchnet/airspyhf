@@ -31,9 +31,9 @@ MEMORY
 
 	ram_ahb1_m0_stack (rwx) : ORIGIN = 0x20000000, LENGTH =  4K
 	ram_ahb1_spare    (rwx) : ORIGIN = 0x20001000, LENGTH =  3K
-	ram_ahb1_m4_share (rwx) : ORIGIN = 0x20001C00, LENGTH =  1K
+	ram_local_m4_share (rwx) : ORIGIN = 0x1001A000, LENGTH =  2K
+	ram_local_m0_share (rwx) : ORIGIN = 0x1001A800, LENGTH =  2K
 	ram_ahb1_adchs (rwx)    : ORIGIN = 0x20002000, LENGTH =  4K
-	ram_ahb1_m0_share (rwx) : ORIGIN = 0x20003000, LENGTH =  2K
 	ram_usb_queue_heads (rw) : ORIGIN = 0x20003800, LENGTH =  2K
 
 	/* Removed 32K of AHB SRAM for USB buffer. Straddles two blocks of RAM
@@ -46,9 +46,9 @@ MEMORY
 	ram_ahb2   (rwx) : ORIGIN = 0x2000C000, LENGTH =  16K
 }
 
-cm4_data_share = ORIGIN(ram_ahb1_m4_share);	/* M4 data shared (write by M4 read by M0 */
+cm4_data_share = ORIGIN(ram_local_m4_share);	/* M4 data shared (write by M4 read by M0 */
 adchs_data     = ORIGIN(ram_ahb1_adchs);	/* M4 ADCHS data (write by ADCHS DMA or M4) */
-cm0_data_share = ORIGIN(ram_ahb1_m0_share);	/* M0 data shared (write by M0 read by M4) */
+cm0_data_share = ORIGIN(ram_local_m0_share);	/* M0 data shared (write by M0 read by M4) */
 
 cm0_exec_baseaddr = ORIGIN(ram_ahb2);	/* Used by M4 to load code from M4 RAM to M0 final exec/run addr */
 cm0s_exec_baseaddr = ORIGIN(ram_local_m0sub);	/* Used by M4 to load code from M4 RAM to M0Sub final exec/run addr */

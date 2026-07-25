@@ -182,7 +182,6 @@ typedef struct {
 #define LPC_ADCHS ((LPC_ADCHS_Type *)LPC_ADCHS_BASE)
 
 #define STAT0_FIFO_LEVEL_TRIG   (0x1<<0)
-#define STAT0_FIFO_FULL         (0x1<<0)
 #define STAT0_FIFO_EMPTY        (0x1<<1)
 #define STAT0_FIFO_OVERFLOW     (0x1<<2)
 #define STAT0_DSCR_DONE         (0x1<<3)
@@ -201,8 +200,7 @@ typedef struct {
 #define LAST_SAMPLE_THCMP_RANGE (0x0<<2) /* Range Mask */
 #define LAST_SAMPLE_THCMP_CROSS (0x0<<4) /* Cross Mask */
 
-#define FIFO_EMPTY              (0x1<<15)
-#define FIFO_FULL               (0x1<<4)
+#define FIFO_STS_LEVEL_MASK     0x0f
 
 #define ADC_NUM           3 // LPC4370FET100 max 3 chan only
 #define ADC_FIFO_LEVEL  0x8

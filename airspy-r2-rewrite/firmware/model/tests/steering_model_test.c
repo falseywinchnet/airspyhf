@@ -17,12 +17,12 @@ static const uint32_t bank_addresses[] = {
     0x10008000u,
     0x10084000u,
     0x1000c000u,
-    0x20008000u,
-    0x10010000u,
     0x10088000u,
-    0x10014000u,
+    0x10010000u,
     0x1008c000u,
-    0x10018000u
+    0x10014000u,
+    0x20008000u,
+    0x10080000u
 };
 
 #define BANK_COUNT (sizeof(bank_addresses) / sizeof(bank_addresses[0]))

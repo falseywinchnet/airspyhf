@@ -674,6 +674,7 @@ void usb_device_init(
         USB0_USBINTR_D_UE
       | USB0_USBINTR_D_UEE
       | USB0_USBINTR_D_PCE
+      | USB0_USBINTR_D_SEE
       | USB0_USBINTR_D_URE
       //| USB0_USBINTR_D_SRE
       | USB0_USBINTR_D_SLE
@@ -849,7 +850,8 @@ void usb0_isr(void)
   }
   if (usb_bus_event_cb != 0
     && (status & (USB0_USBSTS_D_UEI
-      | USB0_USBSTS_D_PCI | USB0_USBSTS_D_URI)) != 0)
+      | USB0_USBSTS_D_SEI | USB0_USBSTS_D_PCI
+      | USB0_USBSTS_D_URI)) != 0)
   {
     usb_bus_event_cb(status);
   }
