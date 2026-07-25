@@ -13,7 +13,9 @@ rust/         deliberately deferred Rust/nusb port gate
 
 Run `make` here to build the current library/tools and execute the model tests.
 See [`BUILDING.md`](BUILDING.md). The staged rewrite is specified in
-[`PLAN.md`](PLAN.md).
+[`PLAN.md`](PLAN.md). The authoritative immediate handoff, including decisions,
+reasons, preserved legacy behavior, and exit criteria, is
+[`NEXT_ADVANCEMENT.md`](NEXT_ADVANCEMENT.md).
 
 ## Production sequence
 

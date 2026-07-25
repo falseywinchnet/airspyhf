@@ -67,6 +67,15 @@ Those commands build both the current implementation and that project's
 host-side executable model. See [`firmware/BUILDING.md`](firmware/BUILDING.md)
 and [`driver/BUILDING.md`](driver/BUILDING.md) for prerequisites.
 
+The current implementation handoffs are:
+
+- [`firmware/NEXT_ADVANCEMENT.md`](firmware/NEXT_ADVANCEMENT.md)
+- [`driver/NEXT_ADVANCEMENT.md`](driver/NEXT_ADVANCEMENT.md)
+
+These are authoritative for the immediate next work. They record not only the
+chosen mechanisms, but why they were selected, what legacy behavior remains,
+what is explicitly deferred, and the exit criteria.
+
 ## Build all executable models
 
 The current scaffold has host-buildable contract, firmware ownership and linked

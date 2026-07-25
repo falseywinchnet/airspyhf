@@ -11,7 +11,9 @@ docs/       audits and hardware qualification records
 
 Run `make` here to build the device image and execute the model tests. See
 [`BUILDING.md`](BUILDING.md). The staged engineering plan is
-[`PLAN.md`](PLAN.md).
+[`PLAN.md`](PLAN.md). The authoritative immediate handoff, including decisions,
+reasons, invariants, and exit criteria, is
+[`NEXT_ADVANCEMENT.md`](NEXT_ADVANCEMENT.md).
 
 ## Architectural baseline
 

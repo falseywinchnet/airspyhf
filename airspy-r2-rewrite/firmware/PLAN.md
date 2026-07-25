@@ -1,5 +1,9 @@
 # Firmware refactor plan
 
+The current concrete implementation handoff is
+[`NEXT_ADVANCEMENT.md`](NEXT_ADVANCEMENT.md). Where this long-range plan is
+less specific, that document controls the next advancement.
+
 ## Objective
 
 Produce a readable, auditable C firmware for Airspy R2 and Mini while
