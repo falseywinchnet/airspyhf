@@ -1,0 +1,4 @@
+/.build/
+/.toolchains/
+/wine-bridge/out/
+.DS_Store

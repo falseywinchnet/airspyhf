@@ -46,7 +46,8 @@ const DEFAULT_SAMPLERATE: u32 = 768_000;
 const MAX_SAMPLERATE_INDEX: u32 = 100;
 const DEFAULT_ATT_STEP_COUNT: usize = 9;
 const DEFAULT_ATT_STEP_INCREMENT: f32 = 6.0;
-const RAW_BUFFER_COUNT: usize = 8;
+const USB_TRANSFER_BUFFER_COUNT: usize = 16;
+const CONSUMER_QUEUE_BUFFER_COUNT: usize = 8;
 const PRODUCER_WAIT_MS: u64 = 10;
 const PRODUCER_CANCEL_DRAIN_MS: u64 = 50;
 const MAX_FIRMWARE_SAMPLERATES: usize = 64;
@@ -563,9 +564,10 @@ impl AirspyHfDevice {
             dev_ptr: self as *mut AirspyHfDevice as usize,
         };
 
-        // Queue of completed blocks + a return path for consumed USB buffers.
-        let (full_tx, full_rx) = sync_channel::<RawBlock>(RAW_BUFFER_COUNT);
-        let (empty_tx, empty_rx) = sync_channel::<Buffer>(RAW_BUFFER_COUNT);
+        // Keep USB depth independent from consumer lag: 16 transfers can stay
+        // pending while up to 8 completed buffers are queued/processed.
+        let (full_tx, full_rx) = sync_channel::<RawBlock>(CONSUMER_QUEUE_BUFFER_COUNT);
+        let (empty_tx, empty_rx) = sync_channel::<Buffer>(CONSUMER_QUEUE_BUFFER_COUNT);
 
         let shared_c = Arc::clone(&self.shared);
         let consumer =
@@ -1215,15 +1217,26 @@ fn producer_proc(
     let _ = ep.clear_halt().wait();
 
     let buf_len = (SAMPLES_TO_TRANSFER as usize) * 4; // bytes: 2 * i16 per complex sample
-    for _ in 0..RAW_BUFFER_COUNT {
+    for _ in 0..USB_TRANSFER_BUFFER_COUNT {
         let mut b = ep.allocate(buf_len);
         b.set_requested_len(buf_len);
         ep.submit(b);
+    }
+    let mut spare_buffers = Vec::with_capacity(CONSUMER_QUEUE_BUFFER_COUNT);
+    for _ in 0..CONSUMER_QUEUE_BUFFER_COUNT {
+        spare_buffers.push(ep.allocate(buf_len));
     }
 
     let mut pending_dropped: u32 = 0;
     loop {
         while let Ok(mut b) = empty_rx.try_recv() {
+            b.clear();
+            spare_buffers.push(b);
+        }
+        while ep.pending() < USB_TRANSFER_BUFFER_COUNT {
+            let Some(mut b) = spare_buffers.pop() else {
+                break;
+            };
             b.set_requested_len(buf_len);
             ep.submit(b);
         }
@@ -1273,7 +1286,13 @@ fn producer_proc(
             buffer: c.buffer,
             dropped: pending_dropped,
         }) {
-            Ok(()) => pending_dropped = 0,
+            Ok(()) => {
+                pending_dropped = 0;
+                if let Some(mut b) = spare_buffers.pop() {
+                    b.set_requested_len(buf_len);
+                    ep.submit(b);
+                }
+            }
             Err(TrySendError::Full(block)) => {
                 pending_dropped = pending_dropped.saturating_add(1);
                 let mut b = block.buffer;

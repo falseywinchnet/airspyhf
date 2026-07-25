@@ -1,0 +1,9 @@
+(version 1)
+(allow default)
+(deny network*)
+(deny file-write*)
+(allow file-write*
+  (subpath "/Users/developer/airspyhf/airspy-r2-research/analysis/runtime")
+  (subpath "/private/tmp")
+  (literal "/dev/null"))
+

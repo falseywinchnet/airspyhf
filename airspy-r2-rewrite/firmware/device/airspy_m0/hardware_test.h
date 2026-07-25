@@ -1,0 +1,29 @@
+#ifndef AIRSPY_HARDWARE_TEST_H
+#define AIRSPY_HARDWARE_TEST_H
+
+#include "usb_request.h"
+
+#include <stdint.h>
+
+enum {
+  AIRSPY_HWTEST_MEMORY_READ = 0x80,
+  AIRSPY_HWTEST_BULK_INIT = 0x81,
+  AIRSPY_HWTEST_ATDTW_BATCH = 0x82,
+  AIRSPY_HWTEST_ATDTW_TELEMETRY = 0x83,
+  AIRSPY_HWTEST_GPDMA_PROBE = 0x84,
+  AIRSPY_HWTEST_BUFFER_BYTES = 16 * 1024,
+  AIRSPY_HWTEST_BULK_BUFFERS = 4,
+  AIRSPY_HWTEST_REPRIME_FIRST_BYTES = 512,
+  AIRSPY_HWTEST_AHB_REFERENCE = 0,
+  AIRSPY_HWTEST_LOCAL1 = 1,
+  AIRSPY_HWTEST_LOCAL2 = 2,
+  AIRSPY_HWTEST_M0SUB = 3,
+  AIRSPY_HWTEST_ATDTW_ACTIVE = 0,
+  AIRSPY_HWTEST_ATDTW_FORCE_REPRIME = 1
+};
+
+usb_request_status_t usb_vendor_request_hardware_test(
+  usb_endpoint_t* const endpoint,
+  const usb_transfer_stage_t stage);
+
+#endif

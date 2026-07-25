@@ -1,0 +1,8 @@
+analysis/generated/
+analysis/runtime/
+build/
+codec/bench
+codec/*-cortex-m4.s
+*.iq
+*.raw
+*.bin
