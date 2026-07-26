@@ -5,4 +5,6 @@ Cargo.lock
 /install*/
 libairspyhf/recovered-airspyhf-musl/
 .toolchains/
+airspy-r2-research/upstream/airspyone_firmware/
+airspy-r2-research/upstream/airspyone_host/
 .toolchains/
