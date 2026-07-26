@@ -889,7 +889,7 @@ static int readable_close(airspy_device* const device)
     if (owner == nullptr) {
         return AIRSPY_ERROR_INVALID_PARAM;
     }
-    std::lock_guard lifecycle_lock(owner->lifecycle_mutex());
+    std::unique_lock lifecycle_lock(owner->lifecycle_mutex());
 
     const int stop_result = readable_stop_rx(device);
     if (stop_result != AIRSPY_SUCCESS) {
@@ -908,11 +908,18 @@ static int readable_close(airspy_device* const device)
     if (free_result != AIRSPY_SUCCESS) {
         return free_result;
     }
-    readable_runtime_destroy(device);
     pthread_cond_destroy(&device->consumer_cv);
     pthread_mutex_destroy(&device->consumer_mp);
     airspy_open_exit(device);
     std::free(device->supported_samplerates);
+
+    /*
+     * The lifecycle mutex belongs to ReadableRuntime. Release it before
+     * destroying the runtime; otherwise the lock destructor attempts to
+     * unlock storage that has already been freed.
+     */
+    lifecycle_lock.unlock();
+    readable_runtime_destroy(device);
     std::free(device);
     return AIRSPY_SUCCESS;
 }
