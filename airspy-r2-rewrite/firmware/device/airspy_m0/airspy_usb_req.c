@@ -939,8 +939,10 @@ void airspy_usb_req_init(void)
   vendor_request_handler[AIRSPY_R820T_WRITE] = usb_vendor_request_write_r820t;
   vendor_request_handler[AIRSPY_R820T_READ] = usb_vendor_request_read_r820t;
 
+#ifndef AIRSPY_PREVENT_FLASH
   vendor_request_handler[AIRSPY_SPIFLASH_ERASE] = usb_vendor_request_erase_spiflash;
   vendor_request_handler[AIRSPY_SPIFLASH_WRITE] = usb_vendor_request_write_spiflash;
+#endif
   vendor_request_handler[AIRSPY_SPIFLASH_READ] = usb_vendor_request_read_spiflash;
 
   vendor_request_handler[AIRSPY_BOARD_ID_READ] = usb_vendor_request_read_board_id;
@@ -971,7 +973,9 @@ void airspy_usb_req_init(void)
   vendor_request_handler[AIRSPY_GET_SAMPLERATES] = usb_vendor_request_get_samplerates_command;
   vendor_request_handler[AIRSPY_SET_PACKING] = usb_vendor_request_set_packing_command;
 
+#ifndef AIRSPY_PREVENT_FLASH
   vendor_request_handler[AIRSPY_SPIFLASH_ERASE_SECTOR] = usb_vendor_request_erase_sector_spiflash;
+#endif
 }
 
 usb_request_status_t usb_vendor_request(usb_endpoint_t* const endpoint, const usb_transfer_stage_t stage)

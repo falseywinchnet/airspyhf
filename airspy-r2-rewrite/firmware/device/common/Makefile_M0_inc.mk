@@ -40,6 +40,11 @@ GDB		= $(PREFIX)-gdb
 TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
 OBJCOPY_BIN_FLAGS ?=
 
+PREVENT_FLASH ?= 0
+ifeq ($(PREVENT_FLASH),1)
+EXTRA_CFLAGS += -DAIRSPY_PREVENT_FLASH
+endif
+
 CFLAGS += -std=gnu99 -Os -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
 		 -mthumb -DTHUMB -mcpu=cortex-m0 -flto -ffunction-sections -fdata-sections \
         $(AIRSPY_OPTS) $(EXTRA_CFLAGS)

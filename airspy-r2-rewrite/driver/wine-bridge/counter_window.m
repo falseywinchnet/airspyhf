@@ -27,6 +27,7 @@ enum {
     ROW_DMA_DROPPED,
     ROW_USB_DTD_ERRORS,
     ROW_USB_SYSTEM_ERRORS,
+    ROW_USB_CONFIGURE_FLUSH_FAILURES,
     ROW_USB_QUEUE_RECOVERIES,
     ROW_USB_PARTIAL,
     ROW_USB_BACKPRESSURE,
@@ -96,6 +97,7 @@ static NSString *mode_name(uint32_t mode)
     case 2: return @"ADC ring";
     case 3: return @"recovering";
     case 4: return @"poisoned";
+    case 5: return @"ADC packed ring";
     default: return @"unknown";
     }
 }
@@ -137,23 +139,34 @@ static NSString *mode_name(uint32_t mode)
     _socket = -1;
     _values = [NSMutableArray arrayWithCapacity:ROW_COUNT];
 
+#ifdef AOB_FIFO_ONLY_VIEW
+    const BOOL fifoOnly = YES;
+    const CGFloat windowHeight = 220;
+#else
+    const BOOL fifoOnly = NO;
+    const CGFloat windowHeight = 948;
+#endif
     _window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(100, 100, 480, 948)
+        initWithContentRect:NSMakeRect(100, 100, 480, windowHeight)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    _window.title = @"Airspy Stream Counters";
+    _window.title = fifoOnly
+        ? @"Airspy Packing FIFO Watch"
+        : @"Airspy Stream Counters";
     _window.delegate = self;
     _window.level = NSFloatingWindowLevel;
     [_window setFrameAutosaveName:@"AirspyStreamCountersWindow"];
 
     NSView *content = _window.contentView;
+    const CGFloat statusY = fifoOnly ? 178 : 906;
+    const CGFloat sessionY = fifoOnly ? 154 : 884;
     _status = [self labelWithText:@"Connecting to helper…"
-                            frame:NSMakeRect(18, 906, 444, 22) bold:YES];
+                            frame:NSMakeRect(18, statusY, 444, 22) bold:YES];
     _session = [self labelWithText:@""
-                             frame:NSMakeRect(18, 884, 444, 20) bold:NO];
+                             frame:NSMakeRect(18, sessionY, 444, 20) bold:NO];
     [content addSubview:_status];
     [content addSubview:_session];
 
@@ -173,6 +186,7 @@ static NSString *mode_name(uint32_t mode)
         @"Estimated dropped banks",
         @"USB dTD errors",
         @"USB controller system errors",
+        @"Unsafe endpoint rewrites prevented",
         @"USB queue recoveries",
         @"USB partial transfers",
         @"USB queue backpressure",
@@ -194,8 +208,11 @@ static NSString *mode_name(uint32_t mode)
         @"Ownership overwrites"
     ];
 
-    CGFloat y = 854;
-    for (NSUInteger index = 0; index < names.count; ++index, y -= 24) {
+    CGFloat y = fifoOnly ? 116 : 854;
+    for (NSUInteger index = 0; index < names.count; ++index) {
+        const BOOL visible =
+            !fifoOnly || index == ROW_ADC_FIFO
+                      || index == ROW_ADC_FIFO_HIGH_WATER;
         NSTextField *name = [self labelWithText:names[index]
                                           frame:NSMakeRect(24, y, 325, 20)
                                            bold:NO];
@@ -203,13 +220,18 @@ static NSString *mode_name(uint32_t mode)
                                            frame:NSMakeRect(354, y, 100, 20)
                                             bold:YES];
         value.alignment = NSTextAlignmentRight;
-        [content addSubview:name];
-        [content addSubview:value];
+        if (visible) {
+            [content addSubview:name];
+            [content addSubview:value];
+            y -= 30;
+        }
         [_values addObject:value];
     }
 
     NSTextField *note = [self
-        labelWithText:@"View resets on start, stop, or sample-rate change."
+        labelWithText:fifoOnly
+            ? @"Any overflow increment rejects FIFO-neutral packing."
+            : @"View resets on start, stop, or sample-rate change."
                  frame:NSMakeRect(18, 18, 444, 20) bold:NO];
     note.textColor = NSColor.secondaryLabelColor;
     [content addSubview:note];
@@ -419,6 +441,8 @@ static NSString *mode_name(uint32_t mode)
     [self setRow:ROW_USB_DTD_ERRORS value:DELTA(usb_errors) fault:YES];
     [self setRow:ROW_USB_SYSTEM_ERRORS
            value:DELTA(usb_system_error_count) fault:YES];
+    [self setRow:ROW_USB_CONFIGURE_FLUSH_FAILURES
+           value:DELTA(usb_endpoint_configure_flush_failures) fault:YES];
     [self setRow:ROW_USB_QUEUE_RECOVERIES
            value:DELTA(usb_queue_recovery_count) fault:YES];
     [self setRow:ROW_USB_PARTIAL value:DELTA(usb_partial) fault:YES];

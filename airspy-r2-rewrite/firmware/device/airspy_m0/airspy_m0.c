@@ -293,6 +293,10 @@ static void adc_stream_retired(
   const uint32_t started = STK_CVR;
 #endif
   volatile airspy_stream_buffer_record_t* const record = context;
+  const uint32_t expected_length =
+    (record->flags & AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD) != 0
+      ? AIRSPY_STREAM_PACKED_BUFFER_BYTES
+      : AIRSPY_STREAM_BUFFER_BYTES;
   record->retired_bytes = actual_length;
   if (status == USB_TRANSFER_RETIREMENT_CANCELLED)
   {
@@ -303,7 +307,7 @@ static void adc_stream_retired(
     stream_contract->usb_errors++;
     stream_contract->usb_queue_recovery_count++;
   }
-  else if (actual_length != AIRSPY_STREAM_BUFFER_BYTES)
+  else if (actual_length != expected_length)
   {
     stream_contract->usb_partial++;
     stream_contract->usb_partial_discontinuity_count++;
@@ -369,12 +373,23 @@ static void adc_stream_submit_ready(void)
       cpu_reset();
     }
 
+    const uint32_t payload_bytes =
+      (record->flags & AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD) != 0
+        ? AIRSPY_STREAM_PACKED_BUFFER_BYTES
+        : AIRSPY_STREAM_BUFFER_BYTES;
+    if ((stream_contract->mode == AIRSPY_STREAM_MODE_ADC_RING_PACKED)
+        != (payload_bytes == AIRSPY_STREAM_PACKED_BUFFER_BYTES))
+    {
+      stream_contract->usb_errors++;
+      cpu_reset();
+    }
+
     airspy_stream_publish_barrier();
     record->submitted_generation = generation;
     if (usb_transfer_schedule_tagged(
           &usb_endpoint_bulk_in,
           (void*)record->address,
-          AIRSPY_STREAM_BUFFER_BYTES,
+          payload_bytes,
           adc_stream_retired,
           (void*)record,
           generation) != 0)
@@ -600,7 +615,8 @@ int main(void)
       continue;
     }
 
-    if (stream_mode == AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER)
+    if (stream_mode == AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER
+      || stream_mode == AIRSPY_STREAM_MODE_ADC_RING_PACKED)
     {
       adc_stream_submit_ready();
       continue;

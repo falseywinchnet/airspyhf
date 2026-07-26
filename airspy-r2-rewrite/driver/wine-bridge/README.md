@@ -36,7 +36,11 @@ the upstream setter.  The Windows probe verifies:
 | Native 3 MSPS complex | 3.002 MS/s | 0 |
 
 Build with `./build.sh`, start `out/airspy-helper`, then put
-`out/airspy.dll` beside `SDRSharp.exe`.  The default loopback port is 53978;
+`out/airspy.dll` beside `SDRSharp.exe`. The build compiles the release
+`readable/` driver, links the helper directly against it, and copies that exact
+artifact beside the helper as `libairspy.0.dylib`. The helper records the
+resolved native-driver path at startup, so using an older system or upstream
+libairspy is visible rather than inferred. The default loopback port is 53978;
 set `AIRSPY_BRIDGE_PORT` on both processes to override it.
 
 The build also produces `out/AirspyCounters.app`. It uses a read-only helper
@@ -46,6 +50,5 @@ remain boot-lifetime evidence. The window establishes a new visual baseline
 and shows zero whenever SDR# starts or stops the receiver or changes sample
 rate. It stays above SDR# while open.
 
-This bridge is an investigation aid, not the rewritten production driver.
-The native helper still links upstream libairspy and therefore retains its
-conversion and USB behavior.
+This bridge remains an investigation aid. It now dogfoods the readable C++
+candidate while preserving the existing Windows shim ABI.

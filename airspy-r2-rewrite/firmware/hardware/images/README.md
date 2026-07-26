@@ -262,3 +262,129 @@ The known first-start live-tune overflow remains: a cold R2 test poisoned after
 three banks because the post-start PLL transaction is still synchronous. V9
 reduces same-band retune traffic and removes V8's unqualified sustained DMA
 behavior; it does not claim to solve synchronous tuner control.
+
+## Withdrawn R2-only V10 transport-epoch experiment
+
+`airspy-ring-v10-r2-epoch-rebase-experiment-release.bin` is an R2-only
+contention experiment retained only as failed diagnostic history. **Do not
+deploy it.** Both radios have been restored to the exact qualified
+pre-experiment control image
+`airspy-ring-pre-epoch-qualified-27b0fb43-release.bin`.
+
+- R2 experiment size: 23,724 bytes
+- R2 experiment SHA-256:
+  `5cb3f521ce9a5d6e3583dff1fe67d46fe94950813cde551ea2bb5b68e0af4ede`
+- Mini control size: 22,828 bytes
+- Mini control SHA-256:
+  `27b0fb43ab42cc45a43ba049dca488171485fa62e62ba818ef75fa0b20634b5e`
+- Stream contract version: 10 on the R2 experiment
+- Exact post-flash readback passed on R2 `35AC63DC2D7D704F` and Mini
+  `35AC63DC2D6ABB4F`.
+
+Bank 9 at `0x10080000` is a write-only GPDMA scratch destination and is never
+granted to USB. The remaining nine transport banks retain a 4/3/1/1
+distribution across the four qualified SRAM slave groups.
+
+Normal destination selection and USB granting run in the WFE-woken M4 main
+context. The DMA ISR consumes a sequence-published, already-reserved
+destination. A late plan or the first selection that would overwrite captured
+READY history redirects the future LLI into scratch and starts a transport
+epoch rebase. ADC/GPDMA never halt.
+
+During rebase M0 disables and flushes bulk IN, observes cancellation retirement
+for every old dTD, abandons all unsubmitted old-epoch banks, discards unread
+grant notifications, resumes the endpoint without resetting its data toggle,
+and acknowledges. M4 then rebuilds an empty nine-bank pool while capture
+continues into scratch. It stages two real banks behind scratch before
+publishing the first bank of the new epoch.
+
+Private telemetry exposes epoch rebases, scratch-discarded banks, late
+destination plans, abandoned old-epoch banks, and the request/ack generation.
+The public Airspy API and headerless sample stream are unchanged.
+
+The live test rejected the design immediately. It produced 38 rebases, 76
+scratch banks, 38 abandoned banks, and 267 cancelled dTDs with zero late-plan
+events. Main context published scratch as soon as it temporarily saw only
+READY destinations instead of leaving the plan pending until its boundary
+deadline. Moving grants out of the ISR also removed their immediate M0 wake.
+The result repeatedly flushed healthy USB epochs until the host stopped.
+
+## Universal V9 USB queue-hardened release
+
+`airspy-ring-v9-usb-queue-hardened-release.bin` retains the qualified
+pre-epoch capture and transport design and adds the documented ChipIdea
+endpoint-flush completion procedure.
+
+- Image size: 22,876 bytes
+- SHA-256:
+  `a8146a944c8d4673084305867d4c17cc68dac1f0250cb06568818e8078bbcbd2`
+- Stream contract version: 10
+- `ENDPTFLUSH` completion is followed by an `ENDPTSTAT` re-check and repeated
+  under one bounded deadline until endpoint quiescence is proven.
+- A failed configuration-boundary flush leaves the live dQH and software dTD
+  ownership untouched rather than rewriting hardware-owned state.
+- `usb_endpoint_configure_flush_failures` counts those prevented rewrites.
+- The optional `PREVENT_FLASH=1` build was separately compiled and confirmed
+  to retain only SPI-flash read code. This deployed image uses the default
+  `PREVENT_FLASH=0`, so normal USB field updates remain available.
+- All four firmware/model tests pass.
+- Exact flash readback passed on R2 `35AC63DC2D7D704F` and Mini
+  `35AC63DC2D6ABB4F`.
+- Both devices rebooted at high speed and returned a clean version-10
+  telemetry contract.
+
+## R2/Mini V11 packed-ring FIFO experiment
+
+`airspy-ring-v11-r2-packed-ring-fifo-debug.bin` is an experimental diagnostic
+image, not a qualified universal release. It was first flashed to R2 serial
+`35AC63DC2D7D704F`, then byte-identically to Mini serial
+`35AC63DC2D6ABB4F` after the R2 packed-stream test succeeded.
+
+- Image size: 23,340 bytes
+- SHA-256:
+  `47786257ebdda7b4d473e4a28855d2e6b733c6506b364e5224839f08240d18db`
+- Stream contract version: 11
+- Build definitions:
+  `AIRSPY_EXPERIMENTAL_RING_PACKING` and `DMA_ISR_DEBUG`
+- Unpacked mode retains the existing ten-bank path.
+- Enabling the public packing option selects in-place 12-bit packing on the
+  ten-bank ring rather than the legacy contiguous two-bank path.
+- M4 main context packs one 16 KiB raw bank into a 12 KiB payload with DMA and
+  ADCHS interrupts enabled. M0 control commands remain pending during the
+  transform so stop/start cannot recycle the active packing owner.
+- The DMA ISR remains the sole USB grant writer. It grants only banks whose
+  packed generation has been published, and M0 schedules a 12 KiB tagged dTD.
+- The full-bank 8,192-sample golden test and all four firmware/model tests
+  passed before deployment.
+- Exact flash readback passed on both devices. Both rebooted and enumerated at
+  high speed with clean version-11 contracts and zero FIFO overflows before
+  streaming.
+
+## Universal V11 packed-ring release
+
+`airspy-ring-v11-packed-ring-release.bin` promotes the successful packed-ring
+path into the normal firmware build for both R2 and Mini.
+
+- Image size: 23,340 bytes
+- SHA-256:
+  `47786257ebdda7b4d473e4a28855d2e6b733c6506b364e5224839f08240d18db`
+- Stream contract version: 11
+- Normal build definition: `AIRSPY_RING_PACKING`
+- Release build: `RELEASE=1`; `DMA_ISR_DEBUG` and
+  `AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS` are absent.
+- Packed mode uses the ten-bank ownership ring, in-place 16-to-12 KiB
+  transformation, and 12 KiB tagged dTDs.
+- Unpacked mode retains the qualified ten-bank 16 KiB transport.
+- The resulting bytes match the earlier diagnostic-labelled V11 artifact
+  because that source also explicitly undefines `DMA_ISR_DEBUG`; the release
+  rebuild additionally removes compiler debug information from the ELF, which
+  is outside the flashable binary.
+- The full-bank 8,192-sample golden test, all four firmware model tests, and
+  exact device readback passed.
+- The release image was written and read back byte-for-byte on R2
+  `35AC63DC2D7D704F` and Mini `35AC63DC2D6ABB4F`; both rebooted at high speed
+  with version-11 contracts and zero ownership, DMA, FIFO, descriptor, USB, or
+  recovery faults.
+- The promoted readable driver completed unpacked lifecycle, forced
+  slow-consumer, packed unsigned-16, packed signed-16, packed float, and both
+  packed IQ smoke paths on both radios.

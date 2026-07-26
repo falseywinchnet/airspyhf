@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cassert>
+#include <cstdint>
+#include <vector>
 
 int main()
 {
@@ -17,6 +19,58 @@ int main()
         std::array<std::uint16_t, 8> decoded{};
         assert(unpack_legacy_u12(encoded, decoded) == UnpackResult::ok);
         assert(decoded == expected);
+
+        std::array<std::int16_t, 8> signed_samples{};
+        std::array<float, 8> float_samples{};
+        assert(unpack_legacy_u12_to_i16(encoded, signed_samples)
+            == UnpackResult::ok);
+        assert(unpack_legacy_u12_to_f32(encoded, float_samples)
+            == UnpackResult::ok);
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            assert(signed_samples[index]
+                == static_cast<std::int16_t>(
+                    (static_cast<int>(expected[index]) - 2048) * 16));
+            assert(float_samples[index]
+                == static_cast<float>(
+                    static_cast<int>(expected[index]) - 2048)
+                    * (1.0F / 2048.0F));
+        }
+    }
+    {
+        constexpr std::size_t groups = 257;
+        std::vector<std::uint8_t> encoded(groups * 12U);
+        std::uint32_t generator = 0x13579bdfU;
+        for (auto& byte : encoded) {
+            generator = generator * 1664525U + 1013904223U;
+            byte = static_cast<std::uint8_t>(generator >> 24);
+        }
+
+        std::vector<std::uint16_t> decoded(groups * 8U);
+        std::vector<std::int16_t> signed_samples(groups * 8U);
+        std::vector<float> float_samples(groups * 8U);
+        assert(unpack_legacy_u12(encoded, decoded) == UnpackResult::ok);
+        assert(unpack_legacy_u12_to_i16(encoded, signed_samples)
+            == UnpackResult::ok);
+        assert(unpack_legacy_u12_to_f32(encoded, float_samples)
+            == UnpackResult::ok);
+        for (std::size_t index = 0; index < decoded.size(); ++index) {
+            assert(signed_samples[index]
+                == static_cast<std::int16_t>(
+                    (static_cast<int>(decoded[index]) - 2048) * 16));
+            assert(float_samples[index]
+                == static_cast<float>(
+                    static_cast<int>(decoded[index]) - 2048)
+                    * (1.0F / 2048.0F));
+        }
+
+        const std::span<const std::uint8_t> malformed(
+            encoded.data(), encoded.size() - 1U);
+        assert(unpack_legacy_u12(malformed, decoded)
+            == UnpackResult::input_size);
+        const std::span<std::uint16_t> short_output(
+            decoded.data(), decoded.size() - 1U);
+        assert(unpack_legacy_u12(encoded, short_output)
+            == UnpackResult::output_size);
     }
     {
         constexpr std::array<std::uint8_t, 12> encoded{

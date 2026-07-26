@@ -1,9 +1,14 @@
 # Firmware next advancement
 
-Status: V8 withdrawn; V9 release flashed and byte-verified on R2 and Mini
+Status: V11 packed-ring release flashed and byte-verified on R2 and Mini
 Baseline: ten-bank steered ring, M4-only grants, M0 retirement ring
 Wire compatibility: unchanged legacy Airspy One API and headerless sample stream
 Driver requirement: the armed start sequence, from libairspy 1.0.12 onward
+
+The public packing control now selects the ten-bank in-place packed transport
+in every normal build. The former `AIRSPY_EXPERIMENTAL_RING_PACKING` guard was
+renamed `AIRSPY_RING_PACKING` and made part of the standard M4 flags. Unpacked
+mode is unchanged.
 
 ## Implementation result
 

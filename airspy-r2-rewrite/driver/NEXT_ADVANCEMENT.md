@@ -4,6 +4,30 @@ Status: current engineering handoff
 Baseline: field-compatible C/libusb driver in `current/`  
 Public compatibility: unchanged libairspy C API and ABI
 
+Implementation has begun in `model/`. The first extracted rules cover prepared
+start, transactional start unwind, sixteen generation-qualified USB requests,
+the sixteen-plus-eight zero-copy buffer pool, and signed-safe scalar sample
+conversion. `docs/legacy-driver-audit.md` records the concrete C defects these
+owners must eliminate. `readable/` builds the full parity implementation as
+C++, checks its exported symbols against the C library, and has replaced the
+transitional translation unit's packed decoder and scalar converters with the
+tested modules. The ownership and lifecycle model is now connected to actual
+libusb requests in `readable/`. Bounded tests pass on the local R2 and Mini in
+normal, callback-stop, slow-consumer, and packed modes, including ASan/UBSan and
+TSan. See `docs/readable-libusb-integration.md`. The SDR# Wine helper now runs
+the readable candidate and has passed an end-to-end capture probe; control
+extraction, injected transport failures, sustained dogfooding, and complete
+cross-platform testing remain open. A standalone native Windows x64 package
+now cross-builds, matches the frozen export manifest, and passes a PE
+load/version smoke test; direct WinUSB hardware qualification remains open.
+The packed host pipeline is now production code in `readable/`: baseline
+AArch64 uses a bounded NEON byte-table kernel, packed int16/float requests
+write directly to the final output buffer, and non-AArch64 targets retain the
+compact scalar fallback. The C API/ABI and raw packed delivery are unchanged.
+The promoted build passed packed unsigned-16, signed-16, float, signed-IQ, and
+float-IQ hardware smoke captures on both the local R2 and Mini with zero
+dropped samples in the normal callback path.
+
 ## Why this is next
 
 The existing driver is compact and field-proven across COTS hosts. Several
@@ -52,9 +76,9 @@ straight to RX, including sample-rate changes and stop/start cycles.
 
 C++ exceptions never cross the C boundary.
 
-## Frozen transport baseline
+## Fixed transport geometry
 
-Do not tune this during readable tightening:
+Geometry evaluation is complete for this project:
 
 ```text
 16 asynchronous libusb bulk-IN transfers
@@ -65,7 +89,9 @@ Do not tune this during readable tightening:
 
 At 40 MB/s, the sixteen USB requests represent about 105 ms of outstanding
 host work. The consumer queue represents another roughly 52 ms. This is large,
-but it is the field-proven COTS baseline.
+but it is both the field-proven COTS baseline and the selected geometry. Future
+work may improve lifecycle and submission timing; it must not silently alter
+the 16-request or 256-KiB constants.
 
 The USB callback currently:
 
@@ -76,7 +102,19 @@ The USB callback currently:
 5. signals the consumer;
 6. immediately resubmits the same transfer object.
 
-That division is intentional and remains.
+That division is intentional. The readable callback makes one defensible
+ordering change without altering geometry or drop policy:
+
+1. retire and classify the completion;
+2. swap ownership under the consumer-queue lock;
+3. release the lock;
+4. resubmit the transfer with its replacement buffer;
+5. only then signal the consumer.
+
+No conversion, application callback, logging, allocation, telemetry, or
+consumer wake occurs before resubmission. A full consumer queue retains the
+completed transfer's existing buffer, counts the host drop, and resubmits
+without a swap or wake.
 
 ## Short-transfer and drop semantics
 
@@ -200,27 +238,12 @@ honest. Otherwise retain it in internal diagnostics/telemetry.
 
 Counter read failure never interrupts streaming.
 
-## Tuning is a later stage
+## Geometry is not an open tuning item
 
-Sixteen 256 KiB requests are preserved until the tightened C++ driver is
-dogfooded. No result from one Mac is called universal.
-
-When tuning begins:
-
-- treat 16 KiB as a natural firmware/backend quantum, not automatically the
-  host request size;
-- test only whole 16 KiB multiples;
-- vary host request size, outstanding count, total outstanding bytes, consumer
-  depth, and callback block size independently;
-- test Windows, macOS, and Linux on ordinary COTS controllers and hubs;
-- measure throughput, queue starvation, completion overhead, latency,
-  cancellation time, loss, restart behavior, and CPU;
-- retain the field geometry unless an alternative is at least as robust across
-  the complete matrix.
-
-The USB standard guarantees bulk packet semantics, not one universal optimal
-userspace request size. The field-proven baseline remains the compatibility
-default until evidence replaces it.
+The host request geometry is 16 asynchronous requests of 256 KiB each.
+Cross-platform work still measures queue starvation, completion overhead,
+cancellation, loss, and restart behavior, but it does so with that geometry
+held fixed.
 
 ## Possible Rust/nusb stage
 
@@ -240,7 +263,7 @@ as evidence of better USB scheduling or throughput.
 
 ## Explicit non-goals for the next advancement
 
-- no transfer-size tuning;
+- no transfer-size or transfer-count tuning;
 - no switch from libusb to nusb;
 - no public API/ABI change;
 - no new framing or sequence header;
@@ -279,4 +302,3 @@ as evidence of better USB scheduling or throughput.
 - Ambiguous short/epoch/order failures terminate cleanly with evidence.
 - Stock firmware, universal firmware, R2, and Mini all pass.
 - No tuning or Rust claim is mixed into the parity/tightening review.
-

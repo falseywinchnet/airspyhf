@@ -8,7 +8,8 @@ LIBUSB_LIBS := $(shell $(PKG_CONFIG) --libs libusb-1.0)
 .PHONY: all clean
 
 all: memory_visibility_test atdtw_stress_test gpdma_visibility_test \
-	adc_ring_telemetry spiflash_recover_varying lpcdfu_recover
+	adc_ring_telemetry spiflash_recover_varying lpcdfu_recover \
+	airspy_target_reboot
 
 memory_visibility_test: memory_visibility_test.c
 	$(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Wpedantic \
@@ -34,6 +35,11 @@ lpcdfu_recover: lpcdfu_recover.c
 	$(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Wpedantic \
 		$(LIBUSB_CFLAGS) $< -o $@ $(LIBUSB_LIBS)
 
+airspy_target_reboot: airspy_target_reboot.c
+	$(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Wpedantic \
+		$(LIBUSB_CFLAGS) $< -o $@ $(LIBUSB_LIBS)
+
 clean:
 	rm -f memory_visibility_test atdtw_stress_test gpdma_visibility_test \
-		adc_ring_telemetry spiflash_recover_varying lpcdfu_recover
+		adc_ring_telemetry spiflash_recover_varying lpcdfu_recover \
+		airspy_target_reboot

@@ -26,7 +26,7 @@
 
 # derived primarily from Makefiles in libopencm3
 
-AIRSPY_OPTS = -DLPC43XX -DLPC43XX_M4 -DCORE_M4
+AIRSPY_OPTS = -DLPC43XX -DLPC43XX_M4 -DCORE_M4 -DAIRSPY_RING_PACKING
 
 LDSCRIPT ?= ../common/LPC4370_M4.ld
 
@@ -39,6 +39,11 @@ OBJCOPY = $(PREFIX)-objcopy
 OBJDUMP = $(PREFIX)-objdump
 GDB = $(PREFIX)-gdb
 TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
+
+PREVENT_FLASH ?= 0
+ifeq ($(PREVENT_FLASH),1)
+EXTRA_CFLAGS += -DAIRSPY_PREVENT_FLASH
+endif
 
 #CFLAGS += -std=gnu99 -O3 -g3 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
 #		-fno-common -mcpu=cortex-m4 -mthumb -MD \

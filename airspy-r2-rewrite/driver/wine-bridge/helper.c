@@ -5,6 +5,7 @@
  * stable public airspy.dll ABI implemented by shim.c.
  */
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -44,6 +45,18 @@ static uint32_t monitor_event = AOB_MONITOR_HELPER_STARTED;
 static uint32_t monitor_streaming;
 static uint32_t monitor_sample_rate;
 static uint64_t monitor_host_dropped_samples;
+
+static void log_loaded_driver(void)
+{
+    Dl_info info;
+    memset(&info, 0, sizeof(info));
+    if (dladdr((const void *)(uintptr_t)&airspy_lib_version, &info) != 0 &&
+        info.dli_fname != NULL) {
+        LOG("native driver resolved to %s", info.dli_fname);
+    } else {
+        LOG("native driver path could not be resolved");
+    }
+}
 
 /*
  * The bridge is pinned to the adjacent libairspy build. These are the first
@@ -742,6 +755,7 @@ int main(void)
 
     airspy_lib_version_t version = {0};
     airspy_lib_version(&version);
+    log_loaded_driver();
     LOG("listening on 127.0.0.1:%d (libairspy %u.%u.%u)", port,
         version.major_version, version.minor_version, version.revision);
 

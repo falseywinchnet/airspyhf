@@ -1,0 +1,22 @@
+LIBRARY "libusb-1.0.dll"
+EXPORTS
+    libusb_alloc_transfer
+    libusb_cancel_transfer
+    libusb_claim_interface
+    libusb_clear_halt
+    libusb_close
+    libusb_control_transfer
+    libusb_detach_kernel_driver
+    libusb_exit
+    libusb_free_device_list
+    libusb_free_transfer
+    libusb_get_device_descriptor
+    libusb_get_device_list
+    libusb_get_string_descriptor_ascii
+    libusb_handle_events_timeout_completed
+    libusb_init
+    libusb_kernel_driver_active
+    libusb_open
+    libusb_release_interface
+    libusb_set_configuration
+    libusb_submit_transfer

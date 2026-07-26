@@ -12,9 +12,11 @@ enum {
   AIRSPY_PID = 0x60a1,
   STREAM_TELEMETRY_REQUEST = 0x87,
   STREAM_MAGIC = 0x53424f34u,
-  STREAM_VERSION = 9,
+  STREAM_VERSION = 11,
   STREAM_MODE_ADC_FOUR_BUFFER = 2,
   STREAM_MODE_RECOVERING = 3,
+  STREAM_MODE_ADC_RING_PACKED = 5,
+  STREAM_BUFFER_FLAG_PACKED_PAYLOAD = 1u << 2,
   BUFFER_COUNT = 10,
   RETIRE_QUEUE_COUNT = 16,
   GRANT_QUEUE_COUNT = 16,
@@ -130,9 +132,10 @@ typedef struct {
   uint32_t stale_generation_completions;
   uint32_t steering_available_histogram[BUFFER_COUNT + 1];
   buffer_record_t buffers[BUFFER_COUNT];
+  uint32_t usb_endpoint_configure_flush_failures;
 } stream_contract_t;
 
-_Static_assert(sizeof(stream_contract_t) == 940,
+_Static_assert(sizeof(stream_contract_t) == 944,
   "host and firmware stream contracts must agree");
 
 static const char* stream_mode_name(const uint32_t mode)
@@ -143,6 +146,7 @@ static const char* stream_mode_name(const uint32_t mode)
     case 1: return "synthetic";
     case STREAM_MODE_ADC_FOUR_BUFFER: return "ADC ring";
     case STREAM_MODE_RECOVERING: return "recovering";
+    case STREAM_MODE_ADC_RING_PACKED: return "ADC packed ring";
     case 4: return "poisoned";
     default: return "unknown";
   }
@@ -232,6 +236,12 @@ static void print_fault_deltas(
       "  USB backpressure +%" PRIu32
         ", resulting ADC discontinuities +%" PRIu32 "\n",
       DELTA(usb_backpressure), DELTA(backpressure_discontinuity_count));
+  }
+  if (DELTA(usb_endpoint_configure_flush_failures) != 0)
+  {
+    printf(
+      "  USB endpoint configuration rewrites prevented +%" PRIu32 "\n",
+      DELTA(usb_endpoint_configure_flush_failures));
   }
   if (DELTA(usb_suspend_discontinuities) != 0)
   {
@@ -428,7 +438,8 @@ int main(int argc, char** argv)
       ", transport-terminated=%" PRIu32
       ", FIFO-level-high-water=%" PRIu32 "/16"
       ", full-observations=%" PRIu32
-      ", USB-system-errors=%" PRIu32 "\n"
+      ", USB-system-errors=%" PRIu32
+      ", configure-flush-failures=%" PRIu32 "\n"
     "suspend: active=%" PRIu32 ", suspend/resume=%" PRIu32 "/%" PRIu32
       ", discontinuities=%" PRIu32 "\n"
     "recovery: request/ack/complete=%" PRIu32 "/%" PRIu32 "/%" PRIu32
@@ -477,6 +488,7 @@ int main(int argc, char** argv)
     contract.adc_fifo_level_high_water,
     contract.adc_fifo_full_observations,
     contract.usb_system_error_count,
+    contract.usb_endpoint_configure_flush_failures,
     contract.usb_suspended, contract.usb_suspend_count,
     contract.usb_resume_count, contract.usb_suspend_discontinuities,
     contract.recovery_request_generation,
@@ -543,7 +555,8 @@ int main(int argc, char** argv)
 
   int failed = contract.magic != STREAM_MAGIC
     || contract.version != STREAM_VERSION
-    || contract.mode != STREAM_MODE_ADC_FOUR_BUFFER
+    || (contract.mode != STREAM_MODE_ADC_FOUR_BUFFER
+      && contract.mode != STREAM_MODE_ADC_RING_PACKED)
     || contract.capture_completed == 0
     || contract.capture_halted != 0
     || contract.dma_error_count != 0
@@ -565,7 +578,7 @@ int main(int argc, char** argv)
     if (record->produced_generation != record->granted_generation
       || record->granted_generation != record->submitted_generation
       || record->submitted_generation != record->retired_generation
-      || record->flags != 0)
+      || (record->flags & ~STREAM_BUFFER_FLAG_PACKED_PAYLOAD) != 0)
     {
       failed = 1;
     }

@@ -42,6 +42,12 @@ make
 This performs the toolchain/header check, builds the device image, builds the
 host ownership/queue model, and runs its tests.
 
+The normal M4 build includes `AIRSPY_RING_PACKING`. Enabling the public
+packing control therefore keeps the ten-bank ownership ring and publishes
+12 KiB packed banks; it does not fall back to the legacy contiguous two-bank
+path. `DMA_ISR_DEBUG` and boundary diagnostics remain disabled unless
+explicitly enabled for a diagnostic build.
+
 The flashable image is:
 
 ```text
@@ -55,6 +61,25 @@ make firmware
 make test
 make clean
 ```
+
+## Optional USB flash lock
+
+`PREVENT_FLASH` defaults to off, preserving normal field-update behavior. A
+deployment that requires physical control over firmware replacement may build:
+
+```sh
+make RELEASE=1 PREVENT_FLASH=1
+```
+
+That build leaves SPI-flash reads available but does not register the USB
+handlers for whole-chip erase, page write, or sector erase. Those vendor
+requests stall without executing mutation code.
+
+This choice removes ordinary USB field update. A device flashed with
+`PREVENT_FLASH=1` can be recovered only by forcing the LPC43xx USB0 boot ROM
+with the physical ISP pin and writing a known-good image from
+`hardware/recovery/`. Do not ship a locked image without preserving that
+physical recovery procedure.
 
 Release builds must record the compiler version, M0/M4 size output, image
 SHA-256, and the matching qualification record. Qualified historical images

@@ -5,11 +5,12 @@
 
 enum {
   AIRSPY_STREAM_CONTRACT_MAGIC = 0x53424f34u, /* "SBO4" */
-  AIRSPY_STREAM_CONTRACT_VERSION = 9,
+  AIRSPY_STREAM_CONTRACT_VERSION = 11,
   AIRSPY_STREAM_BUFFER_COUNT = 10,
   AIRSPY_STREAM_RETIRE_QUEUE_COUNT = 16,
   AIRSPY_STREAM_GRANT_QUEUE_COUNT = 16,
   AIRSPY_STREAM_BUFFER_BYTES = 16 * 1024,
+  AIRSPY_STREAM_PACKED_BUFFER_BYTES = 12 * 1024,
   AIRSPY_STREAM_MODE_LEGACY = 0,
   AIRSPY_STREAM_MODE_SYNTHETIC = 1,
   AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER = 2,
@@ -17,8 +18,11 @@ enum {
   AIRSPY_STREAM_MODE_RECOVERING = 3,
   /* ADC phase is unknowable after FIFO loss; transport epoch is terminated. */
   AIRSPY_STREAM_MODE_POISONED = 4,
+  /* Experimental in-place 12-bit packing on the ten-bank ADC ring. */
+  AIRSPY_STREAM_MODE_ADC_RING_PACKED = 5,
   AIRSPY_STREAM_BUFFER_FLAG_OVERWRITE_RISK = 1u << 0,
   AIRSPY_STREAM_BUFFER_FLAG_STEERING_DISCARD = 1u << 1,
+  AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD = 1u << 2,
   AIRSPY_STREAM_GPDMA_IDLE = 0,
   AIRSPY_STREAM_GPDMA_PENDING = 1,
   AIRSPY_STREAM_GPDMA_PASSED = 2,
@@ -196,6 +200,9 @@ typedef struct {
     AIRSPY_STREAM_BUFFER_COUNT + 1];
 
   airspy_stream_buffer_record_t buffers[AIRSPY_STREAM_BUFFER_COUNT];
+
+  /* M0 refused to rewrite a dQH because quiescence was not proven. */
+  volatile uint32_t usb_endpoint_configure_flush_failures;
 } airspy_stream_contract_t;
 
 static inline void airspy_stream_publish_barrier(void)

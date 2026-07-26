@@ -26,6 +26,7 @@
 #include "usb_type.h"
 #include "usb_queue.h"
 #include "usb_standard_request.h"
+#include "stream_contract.h"
 
 #include <libopencm3/lpc43xx/creg.h>
 #include <libopencm3/lpc43xx/m0/nvic.h>
@@ -38,6 +39,9 @@ static bool usb_device_suspended;
 static usb_suspend_changed_fn usb_suspend_changed_cb;
 static usb_fatal_error_fn usb_fatal_error_cb;
 static usb_bus_event_fn usb_bus_event_cb;
+extern uint32_t cm4_data_share;
+static volatile airspy_stream_contract_t* const stream_contract =
+  (airspy_stream_contract_t*)&cm4_data_share;
 #ifdef AIRSPY_USB_QUEUE_TELEMETRY
 static volatile usb_atdtw_telemetry_t usb_atdtw_telemetry;
 #endif
@@ -193,18 +197,20 @@ static void usb_clear_all_pending_interrupts(void)
   usb_clear_pending_interrupts(0xFFFFFFFF);
 }
 
-static void usb_wait_for_endpoint_priming_to_finish(const uint32_t mask)
+static bool usb_wait_for_endpoint_priming_to_finish(
+  const uint32_t mask,
+  const uint32_t started)
 {
   // Wait until controller has parsed new transfer descriptors and prepared
   // receive buffers.
-  const uint32_t started = STK_CVR;
   while( USB0_ENDPTPRIME & mask )
   {
     if (usb_wait_deadline_expired(started))
     {
-      usb_fatal_error_reset();
+      return false;
     }
   }
+  return true;
 }
 
 static void usb_flush_endpoints(const uint32_t mask)
@@ -214,30 +220,53 @@ static void usb_flush_endpoints(const uint32_t mask)
   USB0_ENDPTFLUSH = mask;
 }
 
-static void usb_wait_for_endpoint_flushing_to_finish(const uint32_t mask)
+static bool usb_wait_for_endpoint_flushing_to_finish(
+  const uint32_t mask,
+  const uint32_t started)
 {
   // Wait until controller has flushed all endpoints / cleared any primed
   // buffers.
-  const uint32_t started = STK_CVR;
   while( USB0_ENDPTFLUSH & mask )
   {
     if (usb_wait_deadline_expired(started))
     {
-      usb_fatal_error_reset();
+      return false;
     }
   }
+  return true;
 }
 
-static void usb_flush_primed_endpoints(const uint32_t mask)
+static bool usb_flush_primed_endpoints(const uint32_t mask)
 {
-  usb_wait_for_endpoint_priming_to_finish(mask);
-  usb_flush_endpoints(mask);
-  usb_wait_for_endpoint_flushing_to_finish(mask);
+  /*
+   * UM10503 25.6.20: a packet already in progress continues through the
+   * flush, and 25.6.21 notes that ENDPTSTAT is momentarily cleared while
+   * hardware re-primes after dTD retirement. ENDPTFLUSH going clear does not
+   * therefore prove the endpoint is quiescent. Repeat until ENDPTSTAT agrees,
+   * using one deadline for the entire operation.
+   */
+  const uint32_t started = STK_CVR;
+  do
+  {
+    if (!usb_wait_for_endpoint_priming_to_finish(mask, started))
+    {
+      return false;
+    }
+    usb_flush_endpoints(mask);
+    if (!usb_wait_for_endpoint_flushing_to_finish(mask, started))
+    {
+      return false;
+    }
+  } while (USB0_ENDPTSTAT & mask);
+  return true;
 }
 
 static void usb_flush_all_primed_endpoints(void)
 {
-  usb_flush_primed_endpoints(0xFFFFFFFF);
+  if (!usb_flush_primed_endpoints(0xFFFFFFFF))
+  {
+    usb_fatal_error_reset();
+  }
 }
 
 static void usb_endpoint_set_type(
@@ -288,7 +317,6 @@ void usb_endpoint_disable(const usb_endpoint_t* const endpoint)
   } else {
     USB0_ENDPTCTRL(endpoint_number) &= ~(USB0_ENDPTCTRL_RXE);
   }
-  usb_queue_flush_endpoint(endpoint);
   usb_endpoint_clear_pending_interrupts(endpoint);
   usb_endpoint_flush(endpoint);
 }
@@ -417,14 +445,33 @@ void usb_endpoint_schedule_append(
 #endif
 }
 
-void usb_endpoint_flush(const usb_endpoint_t* const endpoint)
+static bool usb_endpoint_try_flush(const usb_endpoint_t* const endpoint)
 {
   const uint_fast8_t endpoint_number = usb_endpoint_number(endpoint->address);
-  usb_queue_flush_endpoint(endpoint);
+  uint32_t mask;
   if( usb_endpoint_is_in(endpoint->address) ) {
-    usb_flush_primed_endpoints(USB0_ENDPTFLUSH_FETB(1 << endpoint_number));
+    mask = USB0_ENDPTFLUSH_FETB(1 << endpoint_number);
   } else {
-    usb_flush_primed_endpoints(USB0_ENDPTFLUSH_FERB(1 << endpoint_number));
+    mask = USB0_ENDPTFLUSH_FERB(1 << endpoint_number);
+  }
+  if (!usb_flush_primed_endpoints(mask))
+  {
+    return false;
+  }
+  /*
+   * Retire software ownership only after hardware has stopped referencing the
+   * descriptors. A failed hardware flush must leave both the dQH and its dTD
+   * ownership intact.
+   */
+  usb_queue_flush_endpoint(endpoint);
+  return true;
+}
+
+void usb_endpoint_flush(const usb_endpoint_t* const endpoint)
+{
+  if (!usb_endpoint_try_flush(endpoint))
+  {
+    usb_fatal_error_reset();
   }
 }
 /*
@@ -705,7 +752,15 @@ static void usb_endpoint_configure(
   const usb_endpoint_t* const endpoint,
   const bool reset_data_toggle)
 {
-  usb_endpoint_flush(endpoint);
+  if (!usb_endpoint_try_flush(endpoint))
+  {
+    /*
+     * The controller may still own this dQH. Fail closed: preserve it rather
+     * than publishing a partially rewritten queue head to USB DMA.
+     */
+    stream_contract->usb_endpoint_configure_flush_failures++;
+    return;
+  }
 
   uint_fast16_t max_packet_size = endpoint->device->descriptor[7];
   usb_transfer_type_t transfer_type = USB_TRANSFER_TYPE_CONTROL;

@@ -93,7 +93,7 @@ typedef struct {
 
 #define AOB_MONITOR_MAGIC 0x414f4235u /* AOB5 */
 #define AOB_MONITOR_VERSION 1u
-#define AOB_STREAM_CONTRACT_VERSION 9u
+#define AOB_STREAM_CONTRACT_VERSION 11u
 #define AOB_STREAM_BUFFER_COUNT 10u
 #define AOB_STREAM_RETIRE_QUEUE_COUNT 16u
 #define AOB_STREAM_GRANT_QUEUE_COUNT 16u
@@ -207,6 +207,7 @@ typedef struct {
     uint32_t stale_generation_completions;
     uint32_t steering_available_histogram[AOB_STREAM_BUFFER_COUNT + 1];
     aob_stream_buffer_record buffers[AOB_STREAM_BUFFER_COUNT];
+    uint32_t usb_endpoint_configure_flush_failures;
 } aob_stream_telemetry;
 
 typedef struct {
@@ -236,10 +237,10 @@ typedef struct {
 #pragma pack(pop)
 
 #if !defined(_MSC_VER)
-_Static_assert(sizeof(aob_stream_telemetry) == 940,
-               "bridge and firmware stream contracts must agree");
-_Static_assert(sizeof(aob_monitor_snapshot) == 992,
-               "monitor wire layout changed unexpectedly");
+_Static_assert(sizeof(aob_stream_telemetry) == 944,
+  "bridge and firmware stream contracts must agree");
+_Static_assert(sizeof(aob_monitor_snapshot) == 996,
+  "monitor wire layout changed unexpectedly");
 #endif
 
 #endif

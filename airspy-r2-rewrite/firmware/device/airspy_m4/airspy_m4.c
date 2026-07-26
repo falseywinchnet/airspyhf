@@ -93,7 +93,9 @@ volatile airspy_mcore_t *set_packing = (airspy_mcore_t *)((&cm0_data_share)+2);
 volatile int first_start = 0;
 static uint32_t adc_ring_completed_index;
 static uint32_t adc_ring_generation;
+#if defined(DMA_ISR_DEBUG) || defined(AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS)
 static uint32_t adc_ring_last_completion_cycles;
+#endif
 static uint32_t adc_ring_reserved_mask;
 static uint32_t adc_ring_slot_bank[AIRSPY_STREAM_BUFFER_COUNT];
 static uint32_t adc_ring_bank_address[AIRSPY_STREAM_BUFFER_COUNT];
@@ -101,7 +103,19 @@ static uint32_t adc_ring_produced_generation[AIRSPY_STREAM_BUFFER_COUNT];
 static uint32_t adc_ring_steer_cursor;
 static uint32_t adc_ring_available_mask;
 static uint32_t adc_ring_ready_mask;
+#ifdef AIRSPY_RING_PACKING
+/*
+ * M4 main context is the sole writer of packing_mask. The DMA ISR is the sole
+ * writer of packed_ready_mask except for main context publishing a completed
+ * pack under a short interrupt-disabled commit. DMA destination selection and
+ * USB granting exclude packing_mask.
+ */
+static uint32_t adc_ring_packing_mask;
+static uint32_t adc_ring_packed_ready_mask;
+#endif
+#ifdef DMA_ISR_DEBUG
 static uint32_t adc_ring_discard_mask;
+#endif
 static uint32_t adc_ring_group_bank_mask[4];
 static uint8_t adc_ring_bank_group[AIRSPY_STREAM_BUFFER_COUNT];
 static uint8_t adc_ring_group_available[4];
@@ -109,12 +123,14 @@ static uint32_t adc_ring_available_count;
 static uint32_t adc_ring_available_groups;
 static uint32_t adc_ring_retire_read_sequence;
 static uint32_t adc_ring_last_retire_overflows;
+#ifdef DMA_ISR_DEBUG
 static uint32_t adc_ring_capture_completed;
 static uint32_t adc_ring_maximum_completion_cycles;
 static uint32_t adc_ring_steering_overwrites;
 static uint32_t adc_ring_backpressure_discontinuities;
 static uint32_t adc_fifo_level_high_water;
 static uint32_t adc_fifo_full_observations;
+#endif
 
 static uint32_t adc_ring_next_index(const uint32_t index)
 {
@@ -215,24 +231,26 @@ static void adc_ring_drain_retire_queue(void)
   const uint32_t overflows =
     stream_contract->retire_queue_overflows;
   airspy_stream_publish_barrier();
+  uint32_t read = adc_ring_retire_read_sequence;
+  const uint32_t initial_read = read;
 
   if (overflows != adc_ring_last_retire_overflows)
   {
     adc_ring_rebuild_masks();
     adc_ring_last_retire_overflows = overflows;
-    adc_ring_retire_read_sequence = write;
+    read = write;
   }
   else
   {
     uint32_t consumed = 0;
-    while (adc_ring_retire_read_sequence != write && consumed < 2u)
+    while (read != write && consumed < 2u)
     {
       const uint32_t index = stream_contract->retire_queue_entries[
-        adc_ring_retire_read_sequence % AIRSPY_STREAM_RETIRE_QUEUE_COUNT];
+        read % AIRSPY_STREAM_RETIRE_QUEUE_COUNT];
       if (index >= AIRSPY_STREAM_BUFFER_COUNT)
       {
         adc_ring_rebuild_masks();
-        adc_ring_retire_read_sequence = write;
+        read = write;
         break;
       }
       const uint32_t bit = 1u << index;
@@ -247,14 +265,17 @@ static void adc_ring_drain_retire_queue(void)
         }
       }
       adc_ring_ready_mask &= ~bit;
-      adc_ring_retire_read_sequence++;
+      read++;
       consumed++;
     }
   }
 
-  airspy_stream_publish_barrier();
-  stream_contract->retire_queue_read_sequence =
-    adc_ring_retire_read_sequence;
+  if (read != initial_read)
+  {
+    adc_ring_retire_read_sequence = read;
+    airspy_stream_publish_barrier();
+    stream_contract->retire_queue_read_sequence = read;
+  }
 }
 
 /*
@@ -266,7 +287,9 @@ static void adc_ring_drain_retire_queue(void)
  */
 static void service_adc_submission_grants(void)
 {
-  if (stream_contract->mode != AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER)
+  const uint32_t mode = stream_contract->mode;
+  if (mode != AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER
+    && mode != AIRSPY_STREAM_MODE_ADC_RING_PACKED)
   {
     return;
   }
@@ -276,6 +299,12 @@ static void service_adc_submission_grants(void)
   {
     uint32_t candidates =
       adc_ring_ready_mask & ~adc_ring_reserved_mask;
+#ifdef AIRSPY_RING_PACKING
+    if (mode == AIRSPY_STREAM_MODE_ADC_RING_PACKED)
+    {
+      candidates &= adc_ring_packed_ready_mask & ~adc_ring_packing_mask;
+    }
+#endif
     if (candidates == 0)
     {
       break;
@@ -283,13 +312,10 @@ static void service_adc_submission_grants(void)
 
     uint32_t selected = AIRSPY_STREAM_BUFFER_COUNT;
     uint32_t selected_generation = 0;
-    for (uint32_t index = 0; index < AIRSPY_STREAM_BUFFER_COUNT; ++index)
+    while (candidates != 0)
     {
-      const uint32_t bit = 1u << index;
-      if ((candidates & bit) == 0)
-      {
-        continue;
-      }
+      const uint32_t index = __builtin_ctz(candidates);
+      candidates &= candidates - 1u;
       const uint32_t generation =
         adc_ring_produced_generation[index];
       if (selected == AIRSPY_STREAM_BUFFER_COUNT
@@ -353,8 +379,11 @@ static void service_adc_submission_grants(void)
 
   if (granted != 0)
   {
+    /*
+     * The DMA ISR supplies the one DSB/SEV after steering and granting. Keep
+     * this compiler/interconnect publication barrier, but do not wake M0 twice.
+     */
     airspy_stream_publish_barrier();
-    signal_sev();
   }
 }
 
@@ -365,6 +394,9 @@ static uint32_t adc_ring_choose_destination(
   const uint32_t allowed =
     adc_ring_available_mask
     & ~adc_ring_reserved_mask
+#ifdef AIRSPY_RING_PACKING
+    & ~adc_ring_packing_mask
+#endif
     & ~adc_ring_group_bank_mask[committed_group];
   const uint32_t free_mask = allowed & ~adc_ring_ready_mask;
 
@@ -380,26 +412,27 @@ static uint32_t adc_ring_choose_destination(
 
   if (free_mask != 0)
   {
-    uint32_t index = adc_ring_steer_cursor;
-    for (uint32_t offset = 0; offset < AIRSPY_STREAM_BUFFER_COUNT; ++offset)
-    {
-      if ((free_mask & (1u << index)) != 0)
-      {
-        adc_ring_steer_cursor = adc_ring_next_index(index);
-        return index;
-      }
-      index = adc_ring_next_index(index);
-    }
+    const uint32_t at_or_after_cursor =
+      free_mask & (~0u << adc_ring_steer_cursor);
+    const uint32_t index = at_or_after_cursor != 0
+      ? __builtin_ctz(at_or_after_cursor)
+      : __builtin_ctz(free_mask);
+    adc_ring_steer_cursor = adc_ring_next_index(index);
+    return index;
   }
 
-  uint32_t index = adc_ring_steer_cursor;
-  for (uint32_t offset = 0; offset < AIRSPY_STREAM_BUFFER_COUNT; ++offset)
+  /*
+   * Overwrite selection is oldest-generation-first, so cursor order is
+   * irrelevant. Capture generations are unique among the ten live banks:
+   * M4 increments the global generation once per completion and skips zero.
+   * Visit only eligible bits and avoid materializing two cursor phases.
+   */
+  uint32_t candidates =
+    allowed & adc_ring_ready_mask;
+  while (candidates != 0)
   {
-    if ((allowed & adc_ring_ready_mask & (1u << index)) == 0)
-    {
-      index = adc_ring_next_index(index);
-      continue;
-    }
+    const uint32_t index = __builtin_ctz(candidates);
+    candidates &= candidates - 1u;
     if (selected == AIRSPY_STREAM_BUFFER_COUNT
       || adc_ring_generation_older(
         adc_ring_produced_generation[index], selected_age))
@@ -407,7 +440,6 @@ static uint32_t adc_ring_choose_destination(
       selected = index;
       selected_age = adc_ring_produced_generation[index];
     }
-    index = adc_ring_next_index(index);
   }
 
   if (selected != AIRSPY_STREAM_BUFFER_COUNT)
@@ -426,7 +458,7 @@ static void adc_ring_publish_telemetry(void)
    * stalling, but no counter is maintained and nothing is published.
    */
   return;
-#endif
+#else
   /*
    * These values are observational, not ownership authorities. Publish them
    * from the WFE-driven main context so the DMA boundary touches only state
@@ -448,6 +480,7 @@ static void adc_ring_publish_telemetry(void)
     adc_fifo_level_high_water;
   stream_contract->adc_fifo_full_observations =
     adc_fifo_full_observations;
+#endif
 }
 
 static uint32_t stream_checksum(
@@ -639,6 +672,114 @@ __attribute__ ((always_inline)) static inline void pack(
 
 }
 
+#ifdef AIRSPY_RING_PACKING
+/*
+ * Pack one oldest raw-ready bank in place. M0 control commands are held
+ * pending for the duration of the pack so a stop/start or sample-rate rebuild
+ * cannot reclaim the bank underneath this main-context operation. DMA and
+ * ADCHS interrupts remain enabled throughout the transform.
+ *
+ * The two global interrupt-disabled windows contain only the final eligibility
+ * recheck and a few mask stores. The 16-to-12 KiB transform itself is always
+ * preemptible by the ADC critical path.
+ */
+static void service_adc_ring_packing(void)
+{
+  if (stream_contract->mode != AIRSPY_STREAM_MODE_ADC_RING_PACKED)
+  {
+    return;
+  }
+
+  nvic_disable_irq(NVIC_M0CORE_IRQ);
+  __asm volatile ("dsb\n\tisb" ::: "memory");
+
+  uint32_t candidates =
+    adc_ring_ready_mask
+    & ~adc_ring_packed_ready_mask
+    & ~adc_ring_reserved_mask
+    & ~adc_ring_packing_mask;
+  uint32_t selected = AIRSPY_STREAM_BUFFER_COUNT;
+  uint32_t selected_generation = 0;
+  while (candidates != 0)
+  {
+    const uint32_t index = __builtin_ctz(candidates);
+    candidates &= candidates - 1u;
+    const uint32_t generation = adc_ring_produced_generation[index];
+    if (selected == AIRSPY_STREAM_BUFFER_COUNT
+      || adc_ring_generation_older(generation, selected_generation))
+    {
+      selected = index;
+      selected_generation = generation;
+    }
+  }
+
+  if (selected == AIRSPY_STREAM_BUFFER_COUNT)
+  {
+    nvic_enable_irq(NVIC_M0CORE_IRQ);
+    return;
+  }
+
+  const uint32_t selected_bit = 1u << selected;
+  __asm volatile ("cpsid i" ::: "memory");
+  const int still_eligible =
+    stream_contract->mode == AIRSPY_STREAM_MODE_ADC_RING_PACKED
+    && (adc_ring_ready_mask & selected_bit) != 0
+    && (adc_ring_packed_ready_mask & selected_bit) == 0
+    && (adc_ring_reserved_mask & selected_bit) == 0
+    && (adc_ring_packing_mask & selected_bit) == 0
+    && adc_ring_produced_generation[selected] == selected_generation;
+  if (still_eligible)
+  {
+    adc_ring_packing_mask |= selected_bit;
+  }
+  __asm volatile ("cpsie i" ::: "memory");
+
+  if (!still_eligible)
+  {
+    nvic_enable_irq(NVIC_M0CORE_IRQ);
+    return;
+  }
+
+  uint32_t* const bank =
+    (uint32_t*)adc_ring_bank_address[selected];
+  pack(
+    bank,
+    bank,
+    AIRSPY_STREAM_BUFFER_BYTES / sizeof(uint16_t));
+
+  __asm volatile ("cpsid i" ::: "memory");
+  volatile airspy_stream_buffer_record_t* const record =
+    &stream_contract->buffers[selected];
+  const int generation_still_owned =
+    stream_contract->mode == AIRSPY_STREAM_MODE_ADC_RING_PACKED
+    && (adc_ring_ready_mask & selected_bit) != 0
+    && (adc_ring_reserved_mask & selected_bit) == 0
+    && (adc_ring_packing_mask & selected_bit) != 0
+    && adc_ring_produced_generation[selected] == selected_generation
+    && record->produced_generation == selected_generation;
+  if (generation_still_owned)
+  {
+    record->flags |= AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD;
+    airspy_stream_publish_barrier();
+    adc_ring_packed_ready_mask |= selected_bit;
+  }
+  else
+  {
+    /*
+     * This should be unreachable because steering excludes packing_mask.
+     * Leave the bank ungrantable if the generation proof ever fails.
+     */
+    adc_ring_packed_ready_mask &= ~selected_bit;
+    record->flags &= ~AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD;
+    stream_contract->overwrite_prevented++;
+  }
+  adc_ring_packing_mask &= ~selected_bit;
+  __asm volatile ("cpsie i" ::: "memory");
+
+  nvic_enable_irq(NVIC_M0CORE_IRQ);
+}
+#endif
+
 static __inline__ void clr_usb_buffer_offset(void)
 {
   if(use_packing)
@@ -733,6 +874,11 @@ static void adchs_start_internal(const uint8_t chan_num)
 {
   int i;
   uint32_t *dst;
+#ifdef AIRSPY_RING_PACKING
+  const int legacy_packing = 0;
+#else
+  const int legacy_packing = use_packing;
+#endif
 
   /* Disable IRQ globally */
   __asm__("cpsid i");
@@ -741,7 +887,7 @@ static void adchs_start_internal(const uint8_t chan_num)
 
   ADCHS_init();
   ADCHS_desc_init(chan_num);
-  if (use_packing)
+  if (legacy_packing)
   {
     /* Preserve the original contiguous two-bank packing path. */
     dst = (uint32_t*)ADCHS_DATA_BUFFER;
@@ -789,7 +935,9 @@ static void adchs_start_internal(const uint8_t chan_num)
     stream_contract->grant_queue_overflows = 0;
     adc_ring_completed_index = 0;
     adc_ring_generation = 0;
+#if defined(DMA_ISR_DEBUG) || defined(AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS)
     adc_ring_last_completion_cycles = SCS_DWT_CYCCNT;
+#endif
     adc_ring_reserved_mask = (1u << 0) | (1u << 1);
     adc_ring_steer_cursor = 0;
     adc_ring_available_mask =
@@ -797,15 +945,23 @@ static void adchs_start_internal(const uint8_t chan_num)
     adc_ring_available_count = AIRSPY_STREAM_BUFFER_COUNT;
     adc_ring_available_groups = 4u;
     adc_ring_ready_mask = 0;
+#ifdef AIRSPY_RING_PACKING
+    adc_ring_packing_mask = 0;
+    adc_ring_packed_ready_mask = 0;
+#endif
+#ifdef DMA_ISR_DEBUG
     adc_ring_discard_mask = 0;
+#endif
     adc_ring_retire_read_sequence = 0;
     adc_ring_last_retire_overflows = 0;
+#ifdef DMA_ISR_DEBUG
     adc_ring_capture_completed = 0;
     adc_ring_maximum_completion_cycles = 0;
     adc_ring_steering_overwrites = 0;
     adc_ring_backpressure_discontinuities = 0;
     adc_fifo_level_high_water = 0;
     adc_fifo_full_observations = 0;
+#endif
     for (uint32_t group = 0; group < 4u; ++group)
     {
       adc_ring_group_bank_mask[group] = 0;
@@ -823,7 +979,13 @@ static void adchs_start_internal(const uint8_t chan_num)
       adc_ring_group_bank_mask[group] |= 1u << i;
       adc_ring_group_available[group]++;
     }
-    stream_contract->mode = AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER;
+    stream_contract->mode =
+#ifdef AIRSPY_RING_PACKING
+      use_packing
+        ? AIRSPY_STREAM_MODE_ADC_RING_PACKED
+        :
+#endif
+          AIRSPY_STREAM_MODE_ADC_FOUR_BUFFER;
     airspy_stream_publish_barrier();
     ADCHS_DMA_init_ring(destinations);
   }
@@ -1078,15 +1240,20 @@ void dma_isr(void)
     {
       /* Error takes precedence over a coincident terminal-count event. */
     }
-    else if(use_packing)
+    else if (use_packing
+      && stream_contract->mode == AIRSPY_STREAM_MODE_LEGACY)
     {
         set_usb_buffer_offset_m4( inc_mask_usb_buffer_offset_m4(get_usb_buffer_offset_m4(), 8192));
     }
     else
     {
       adc_ring_drain_retire_queue();
+#if defined(DMA_ISR_DEBUG) || defined(AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS)
       const uint32_t now = SCS_DWT_CYCCNT;
+#endif
+#ifdef DMA_ISR_DEBUG
       const uint32_t elapsed = now - adc_ring_last_completion_cycles;
+#endif
       const uint32_t completed_slot = adc_ring_completed_index;
       const uint32_t completed_index =
         adc_ring_slot_bank[completed_slot];
@@ -1127,16 +1294,24 @@ void dma_isr(void)
         }
       }
 #endif
+#ifdef DMA_ISR_DEBUG
       adc_ring_discard_mask &= ~completed_bit;
+#endif
+#ifdef AIRSPY_RING_PACKING
+      adc_ring_packed_ready_mask &= ~completed_bit;
+      completed->flags &= ~AIRSPY_STREAM_BUFFER_FLAG_PACKED_PAYLOAD;
+#endif
       airspy_stream_publish_barrier();
       completed->produced_generation = generation;
       adc_ring_produced_generation[completed_index] = generation;
       adc_ring_ready_mask |= completed_bit;
+#ifdef DMA_ISR_DEBUG
       adc_ring_capture_completed++;
       if (elapsed > adc_ring_maximum_completion_cycles)
       {
         adc_ring_maximum_completion_cycles = elapsed;
       }
+#endif
 
       /*
        * DMA has already entered the next slot. Rewrite only the two in-memory
@@ -1144,13 +1319,13 @@ void dma_isr(void)
        * leaves the steering window first, so the reserve proof guarantees a
        * legal destination on a different SRAM slave port.
        */
-      adc_ring_reserved_mask &= ~(1u << completed_index);
+      adc_ring_reserved_mask &= ~completed_bit;
       const uint32_t current_slot =
         adc_ring_next_index(completed_slot);
       const uint32_t current_index =
         adc_ring_slot_bank[current_slot];
-      const uint32_t committed_group = adc_ring_slave_group(
-        adc_ring_bank_address[current_index]);
+      const uint32_t committed_group =
+        adc_ring_bank_group[current_index];
       const uint32_t target_slot =
         adc_ring_next_index(current_slot);
       uint32_t destination_index = AIRSPY_STREAM_BUFFER_COUNT;
@@ -1162,7 +1337,6 @@ void dma_isr(void)
        * cross-core generation records.
        */
       if (adc_ring_available_count == 2u
-        && (adc_ring_reserved_mask & (1u << completed_index)) == 0
         && adc_ring_bank_group[completed_index] != committed_group)
       {
         destination_index = completed_index;
@@ -1223,9 +1397,14 @@ void dma_isr(void)
         if ((adc_ring_ready_mask & destination_bit) != 0)
         {
           adc_ring_ready_mask &= ~destination_bit;
+#ifdef AIRSPY_RING_PACKING
+          adc_ring_packed_ready_mask &= ~destination_bit;
+#endif
+#ifdef DMA_ISR_DEBUG
           adc_ring_discard_mask |= destination_bit;
           adc_ring_steering_overwrites++;
           adc_ring_backpressure_discontinuities++;
+#endif
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
           if (stream_contract->steering_overwrite_run_current == 0)
           {
@@ -1259,7 +1438,9 @@ void dma_isr(void)
       adc_ring_generation = generation;
       adc_ring_completed_index =
         adc_ring_next_index(completed_slot);
+#if defined(DMA_ISR_DEBUG) || defined(AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS)
       adc_ring_last_completion_cycles = now;
+#endif
       service_adc_submission_grants();
 #ifdef AIRSPY_STREAM_BOUNDARY_DIAGNOSTICS
       const uint32_t steering_cycles = SCS_DWT_CYCCNT - now;
@@ -1475,11 +1656,19 @@ int main(void)
   {
     signal_wfe();
 
+#ifdef AIRSPY_RING_PACKING
+    /*
+     * Consume the just-published raw bank before observational telemetry or
+     * probe work. This maximizes the distance to the next DMA boundary.
+     */
+    service_adc_ring_packing();
+#endif
     adc_ring_publish_telemetry();
     service_gpdma_probe();
     service_adc_recovery();
 
-    if(use_packing)
+    if (use_packing
+      && stream_contract->mode == AIRSPY_STREAM_MODE_LEGACY)
     {
       /* Thanks to Pierre HB9FUF for the initial packing proof-of-concept */
       uint32_t offset = get_usb_buffer_offset_m4();
